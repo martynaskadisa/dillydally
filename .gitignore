@@ -1,0 +1,6 @@
+capture
+DillyDally.app/
+__pycache__/
+.DS_Store
+build/
+dist/

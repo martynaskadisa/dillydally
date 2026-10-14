@@ -1,0 +1,1886 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DillyDally casts your Mac to a TV with no AirPlay</title>
+<meta name="description" content="DillyDally is a free menu-bar app that casts your Mac to a TV with no AirPlay, over Wi-Fi and without a cable. It sends up to 4K at 60 frames a second, with sound.">
+<meta property="og:title" content="DillyDally">
+<meta property="og:description" content="Cast your Mac to a TV that has no AirPlay, without a cable. A free menu-bar app for macOS.">
+<meta property="og:image" content="panel.png">
+<meta name="color-scheme" content="dark light">
+<script>
+// Before the first paint: the theme that was chosen here, or else the system's.
+(() => {
+  let kept = null;
+  try { kept = localStorage.getItem('theme'); } catch (error) { /* no storage, so the system decides */ }
+  document.documentElement.dataset.theme = kept === 'light' || kept === 'dark' ? kept : matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+})();
+</script>
+<link rel="icon" href="icon.png">
+<style>
+/* The page is a room, by night or by day. At night its light comes from the TV:
+   the script keeps --amb at the color of whatever the TV is showing. The
+   terminal, the toast and the frame for browsing through the TV stay dark by
+   day, so they hold on to the night's colors. */
+:root, .term, .toast, .lagframe {
+  --bg: #07070b; --ink: #f6f4ef; --dim: #a7a3b3; --faint: #6d697b; --line: rgba(255,255,255,.1);
+  --card: rgba(255,255,255,.05); --butter: #ffd166; --teal: #3fe0c5; --tomato: #ff6b5e; --blue: #0a84ff;
+  --gold: #ffd166; --warm: #dccca3; --warm-hi: #e7d9b4; --hair: rgba(255,255,255,.2);
+  --lift: rgba(255,255,255,.11); --well: rgba(255,255,255,.07); --knob: rgba(255,255,255,.17); --knob-shade: rgba(0,0,0,.4);
+}
+:root {
+  --shade: rgba(0,0,0,.85); --pin: rgba(7,7,11,.88); --title: linear-gradient(90deg, #ffd166, #ff9f6b 55%, #ff6b8e);
+  --p-ink: rgba(255,255,255,.93); --p-dim: rgba(235,235,245,.6); --p-idle: rgba(235,235,245,.35); --p-bg: rgba(36,36,40,.8);
+  --p-rule: rgba(255,255,255,.12); --p-fill: rgba(255,255,255,.13); --p-hover: rgba(255,255,255,.11); --p-strong: #fff; --p-glyph: #2a2a2e;
+  --p-edge: inset 0 0 0 .5px rgba(255,255,255,.24), 0 0 0 .5px rgba(0,0,0,.7), 0 1.5em 3.4em rgba(0,0,0,.55);
+  --p-seg: rgba(255,255,255,.09); --p-seg-on: rgba(255,255,255,.25); --p-seg-shade: rgba(0,0,0,.45); --p-sw: rgba(255,255,255,.22);
+  --p-spin: rgba(255,255,255,.18); --p-spin-top: rgba(255,255,255,.8); --invite: 255,209,102;
+  --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --stage: min(880px, 56vw, calc((100vh - 28px) / 1.05));
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f4f1ea; --ink: #17161c; --dim: #5a5766; --faint: #737080; --line: rgba(23,20,35,.14);
+  --card: rgba(23,20,35,.045); --teal: #0f9d88; --tomato: #d2382a; --blue: #007aff;
+  --gold: #a86200; --warm: #77591c; --warm-hi: #6b4f17; --hair: rgba(23,20,35,.2);
+  --lift: rgba(23,20,35,.09); --well: rgba(23,20,35,.06); --knob: #fff; --knob-shade: rgba(23,20,35,.18);
+  --shade: rgba(60,50,80,.4); --pin: rgba(244,241,234,.9); --title: linear-gradient(90deg, #e08a00, #f0603a 55%, #e0356e);
+  --p-ink: rgba(0,0,0,.85); --p-dim: rgba(60,60,67,.62); --p-idle: rgba(60,60,67,.3); --p-bg: rgba(246,246,246,.84);
+  --p-rule: rgba(0,0,0,.1); --p-fill: rgba(0,0,0,.08); --p-hover: rgba(0,0,0,.07); --p-strong: #000; --p-glyph: #f4f4f4;
+  --p-edge: inset 0 0 0 .5px rgba(255,255,255,.7), 0 0 0 .5px rgba(0,0,0,.2), 0 1.5em 3.4em rgba(60,50,80,.3);
+  --p-seg: rgba(0,0,0,.07); --p-seg-on: #fff; --p-seg-shade: rgba(0,0,0,.25); --p-sw: rgba(0,0,0,.16);
+  --p-spin: rgba(0,0,0,.14); --p-spin-top: rgba(0,0,0,.6); --invite: 196,122,0;
+  color-scheme: light;
+}
+* { box-sizing: border-box; margin: 0; }
+html { scroll-behavior: smooth; }
+html, body { overflow-x: clip; }
+body { background: var(--bg); color: var(--ink); font: 17px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+a { color: inherit; }
+.wrap { max-width: 1480px; margin: 0 auto; padding: 0 24px; }
+
+.wall {
+  position: fixed; inset: 0; z-index: -2; pointer-events: none;
+  background:
+    radial-gradient(62vmax 54vmax at var(--wx, 72%) var(--wy, 42%), var(--amb, rgba(70,90,220,.14)), transparent 70%),
+    radial-gradient(46vmax 36vmax at 4% 104%, rgba(110,80,255,.1), transparent 70%);
+}
+.grain {
+  position: fixed; inset: -60px; z-index: -1; pointer-events: none; opacity: .07; animation: grain .9s steps(5) infinite;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .9 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+@keyframes grain { 20% { transform: translate(-22px, 14px); } 40% { transform: translate(18px, -26px); } 60% { transform: translate(-30px, -8px); } 80% { transform: translate(26px, 22px); } }
+
+nav { position: absolute; z-index: 3; left: 0; right: 0; top: 0; pointer-events: none; }
+nav .wrap { display: flex; flex-wrap: wrap; align-items: center; align-content: center; gap: 4px 11px; height: 76px; padding-right: calc(24px + var(--stage) + clamp(32px, 4vw, 64px)); }   /* it keeps to the story's column */
+nav svg { width: 34px; height: 34px; }
+nav strong { font-size: 17px; letter-spacing: -.01em; }
+nav a, nav button { all: unset; pointer-events: auto; cursor: pointer; margin-left: 14px; font: 600 14px var(--sans); color: var(--dim); }
+nav a:hover, nav button:hover { color: var(--ink); }
+nav button[aria-pressed=true] { color: var(--gold); }
+nav #theme { padding: 6px; margin: 0 -6px 0 8px; border-radius: 50%; }
+nav button svg { width: 18px; height: 18px; display: block; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+
+/* The tour: the story scrolls past on the left while the room stays put. */
+.tour { display: grid; grid-template-columns: minmax(0, 1fr) var(--stage); column-gap: clamp(32px, 4vw, 64px); }
+.story { grid-column: 1; grid-row: 1; min-width: 0; container-type: inline-size; }
+.pin { grid-column: 2; grid-row: 1; align-self: start; position: sticky; top: 0; height: 100vh; display: grid; place-items: center; }
+.ch { min-height: 100vh; display: flex; flex-direction: column; justify-content: center; padding: 96px 0; transition: opacity .45s; }
+.ch:not(.on) { opacity: .25; }
+h1 { font-size: clamp(34px, 15cqi, 76px); line-height: 1.02; letter-spacing: -.045em; font-weight: 800; }
+h1 span { display: block; white-space: nowrap; }
+h1 em { font-style: normal; background: var(--title); -webkit-background-clip: text; background-clip: text; color: transparent; }
+/* The last line of the headline turns up two seconds late, like everything else here. */
+.late { position: relative; }
+.late em { display: inline-block; opacity: 0; filter: blur(10px); animation: arrive .6s 2s cubic-bezier(.2,.8,.2,1) forwards; }
+.late i { position: absolute; left: 2px; top: 50%; translate: 0 -50%; display: flex; align-items: center; gap: 10px; font: 500 14px var(--mono); letter-spacing: 0; color: var(--dim); animation: leave .25s 2s forwards; }
+.late i::before { content: ""; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--hair); border-top-color: var(--ink); animation: spin .8s linear infinite; }
+@keyframes arrive { to { opacity: 1; filter: none; } }
+@keyframes leave { to { opacity: 0; visibility: hidden; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+h2 { font-size: clamp(29px, 10cqi, 48px); line-height: 1.06; letter-spacing: -.035em; font-weight: 760; }
+.ch p { color: var(--dim); max-width: 31em; margin-top: 18px; text-wrap: pretty; }
+.ch p b { color: var(--ink); font-weight: 600; }
+.ch .more { margin-top: 24px; font-size: .94em; }
+.aside { font: italic 1.04em var(--serif); color: var(--warm-hi); }
+/* Stage directions, as a screenplay has them. */
+.ch .dir { font: italic 16.5px/1.45 var(--serif); color: var(--warm); margin-top: 22px; min-height: 2.9em; }
+.dir:empty { visibility: hidden; }
+.dir.new { animation: cue .5s; }
+@keyframes cue { from { opacity: 0; transform: translateY(4px); } }
+.ch .cue { font: 600 11.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); margin-top: 8px; }
+.cue::after { content: ""; display: inline-block; width: .55em; height: .55em; margin: 0 0 .25em .9em; border: solid var(--gold); border-width: 0 2px 2px 0; rotate: 45deg; animation: nod 1.6s ease-in-out infinite; }
+@keyframes nod { 50% { translate: 0 4px; } }
+
+.row { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: center; margin-top: 26px; }
+.btn { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; gap: 9px; padding: 11px 19px; border-radius: 999px; font: 600 15px var(--sans); border: 1px solid var(--line); background: var(--card); transition: transform .15s, background .15s; white-space: nowrap; }
+.btn:hover { background: var(--lift); transform: translateY(-1px); }
+.btn:active { transform: scale(.98); }
+.btn.go { background: var(--butter); color: #1b1505; border-color: transparent; }
+.btn.go:hover { background: #ffdd8c; }
+.btn:focus-visible, .seg button:focus-visible, .link:focus-visible, .microwave:focus-visible, .spk:focus-visible, .plug:focus-visible, nav button:focus-visible, .copy:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.link { all: unset; cursor: pointer; color: var(--ink); border-bottom: 1px solid var(--gold); }
+.seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; padding: 3px; border-radius: 12px; background: var(--well); border: 1px solid var(--line); }
+.seg button { all: unset; cursor: pointer; padding: 7px clamp(9px, 1vw, 14px); border-radius: 9px; font: 600 14px var(--sans); color: var(--dim); transition: background .15s, color .15s; white-space: nowrap; }
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed=true] { background: var(--knob); color: var(--ink); box-shadow: 0 1px 2px var(--knob-shade); }
+.lbl { font: 600 11.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
+.score { margin: 24px 0 0; max-width: 30em; border-top: 1px solid var(--line); }
+.score div { display: grid; grid-template-columns: 10.5em 1fr; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.score dt { font: 600 11.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+.score dd { margin: 0; font-size: 15px; font-weight: 600; }
+.score dd b { font-weight: inherit; } .score dd i { font-style: normal; font-weight: 500; color: var(--dim); }   /* a setting as it stands, and what else it can be */
+
+.microwave { all: unset; cursor: pointer; display: grid; justify-items: center; gap: 9px; font: 600 13.5px var(--sans); color: var(--dim); transition: transform .15s, color .15s; }
+.microwave:hover { transform: translateY(-2px); color: var(--ink); }
+.microwave:active { transform: scale(.98); }
+.microwave svg { width: 172px; height: auto; display: block; overflow: visible; transition: filter .3s; }
+.mw-body { fill: #1b1c24; stroke: rgba(255,255,255,.22); }
+.mw-glass { fill: #08090e; stroke: rgba(255,255,255,.12); }
+.mw-bag { fill: #ebe4d2; transform-origin: 75px 86px; }
+.mw-band { stroke: #e2534a; stroke-width: 6; }
+.mw-plate { stroke: rgba(255,255,255,.28); stroke-width: 2; stroke-linecap: round; }
+.mw-lcd { fill: #04130f; stroke: rgba(63,224,197,.35); }
+.mw-time { font: 700 11px var(--mono); fill: var(--teal); }
+.mw-dial { fill: #23242d; stroke: rgba(255,255,255,.28); }
+.mw-tick { stroke: #f6f4ef; stroke-width: 2; stroke-linecap: round; transform-origin: 169px 64px; }
+.mw-foot { fill: #101116; }
+.mw-pops circle { fill: #fff3c4; opacity: 0; transform-box: fill-box; transform-origin: center; }
+.microwave[aria-pressed=true] svg { filter: drop-shadow(0 0 22px rgba(255,190,60,.5)); }
+.microwave[aria-pressed=true] .mw-glass { fill: #6b4700; animation: hum .24s steps(2) infinite; }
+.microwave[aria-pressed=true] .mw-bag { animation: swell .45s ease-in-out infinite alternate; }
+.microwave[aria-pressed=true] .mw-tick { animation: spin 3s linear infinite; }
+.microwave[aria-pressed=true] .mw-pops circle { animation: pop .7s ease-out infinite; }
+.mw-pops circle:nth-child(2) { animation-delay: .13s !important; } .mw-pops circle:nth-child(3) { animation-delay: .31s !important; }
+.mw-pops circle:nth-child(4) { animation-delay: .44s !important; } .mw-pops circle:nth-child(5) { animation-delay: .57s !important; }
+@keyframes hum { 50% { fill: #815700; } }
+@keyframes swell { to { transform: scale(1.08, 1.13) rotate(-2deg); } }
+@keyframes pop { 0% { opacity: 0; transform: translateY(16px) scale(.4); } 30% { opacity: 1; } 100% { opacity: 0; transform: translateY(-8px) scale(1.1); } }
+.dials { display: grid; gap: 10px; justify-items: start; }
+.tally { font: 600 12.5px var(--mono); color: var(--dim); min-height: 1.5em; }
+
+/* The room. Everything in it is placed in hundredths of its width (cqw), so it
+   scales as one piece. */
+.stage { position: relative; width: var(--stage); aspect-ratio: 100 / 105; container-type: inline-size; }
+.stage figure { position: absolute; margin: 0; }
+.glow { position: absolute; left: -14cqw; top: -12cqw; width: 128cqw; height: 84cqw; filter: blur(7cqw); opacity: .62; pointer-events: none; }
+.tv { left: 0; top: 0; width: 100%; }
+.bezel { position: relative; padding: .7cqw; border-radius: 1.3cqw; background: linear-gradient(#2b2c35, #101116); box-shadow: inset 0 0 0 1px rgba(255,255,255,.13), 0 4cqw 9cqw -3cqw var(--shade); }
+.bezel canvas { display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: .55cqw; background: #000; }
+.bezel::after { content: ""; position: absolute; inset: .7cqw; border-radius: .55cqw; pointer-events: none; background: linear-gradient(115deg, rgba(255,255,255,.07), transparent 34%); }
+.tv::before, .tv::after { content: ""; position: absolute; bottom: -1.3cqw; width: 9cqw; height: 1.3cqw; background: linear-gradient(#22232a, #0e0f13); clip-path: polygon(22% 0, 78% 0, 100% 100%, 0 100%); }
+.tv::before { left: 16%; } .tv::after { right: 16%; }
+.tv.grab canvas { touch-action: none; }
+.led { position: absolute; right: 2.2cqw; bottom: .15cqw; width: .45cqw; height: .45cqw; border-radius: 50%; background: #ff3b30; box-shadow: 0 0 .8cqw #ff3b30; transition: background .4s, box-shadow .4s; }
+.tv.on .led { background: #e8f1ff; box-shadow: 0 0 .7cqw #9cc4ff; }
+.mac { left: 9cqw; top: 66cqw; width: 50cqw; }
+.mac .bezel { padding: .9cqw; border-radius: 1.5cqw 1.5cqw .4cqw .4cqw; }
+.mac .bezel::after { inset: .9cqw; }
+.mac::after { content: ""; position: absolute; left: -3.2cqw; right: -3.2cqw; bottom: -1.25cqw; height: 1.25cqw; border-radius: 0 0 1.4cqw 1.4cqw; background: linear-gradient(#3a3c46, #17181e); box-shadow: 0 2cqw 4cqw -1cqw var(--shade); }
+.mac canvas { cursor: none; touch-action: none; }
+.air { position: absolute; left: -10cqw; top: 0; width: 120cqw; height: 100%; pointer-events: none; }
+.cap { position: absolute; display: grid; gap: .5cqw; font: 600 1.6cqw/1.4 var(--sans); color: var(--dim); white-space: nowrap; }
+.who { display: flex; align-items: center; gap: .8cqw; }
+.cap i { font-style: normal; }
+.cap b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.cap b.bad { color: var(--tomato); }
+.cap.t { right: 0; top: 59.2cqw; justify-items: end; transition: right .25s; }
+.stage.tall .cap.t { right: 40.25cqw; }   /* out from under a panel that has grown upwards */
+.cap.m { left: 9cqw; top: 97.6cqw; width: 50cqw; justify-items: center; }
+.spk { all: unset; cursor: pointer; width: 2.7cqw; height: 2.7cqw; flex: none; display: grid; place-items: center; border-radius: 50%; color: var(--dim); }
+.spk:hover { background: var(--lift); color: var(--ink); }
+.spk[aria-pressed=true] { color: var(--gold); }
+.spk svg { width: 2cqw; height: 2cqw; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.gauge { display: block; width: 38.75cqw; height: .35cqw; border-radius: 1cqw; background: var(--line); overflow: hidden; transition: opacity .3s; }
+.gauge i { display: block; height: 100%; background: var(--teal); border-radius: inherit; transform-origin: right; }
+.plug { all: unset; position: absolute; left: 0; top: 0; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; cursor: grab; touch-action: none; display: none; }
+.plug.show { display: block; }
+.plug:active { cursor: grabbing; }
+.plug.tease::after { content: ""; position: absolute; inset: 6px; border-radius: 50%; border: 2px solid var(--gold); animation: ping 1.4s ease-out infinite; }
+@keyframes ping { from { transform: scale(.5); opacity: 1; } to { transform: scale(1.5); opacity: 0; } }
+
+/* The app's own panel, rebuilt: the measures are menubar.swift's, in ems of its 13-point text. */
+.panel { width: 23.85em; padding: .77em 1.08em .46em; border-radius: 1em; font: 400 1em/1.25 var(--sans); color: var(--p-ink); background: var(--p-bg); -webkit-backdrop-filter: blur(2.4em) saturate(1.7); backdrop-filter: blur(2.4em) saturate(1.7); box-shadow: var(--p-edge); cursor: default; -webkit-user-select: none; user-select: none; }
+.stage > .panel { position: absolute; left: 61.25cqw; top: 64.2cqw; font-size: 1.625cqw; }
+#slot > .panel { font-size: clamp(9px, 4.19cqi, 15px); max-width: 100%; margin-top: 26px; }   /* as wide as the column, up to a point */
+:where(.panel button) { all: unset; box-sizing: border-box; }
+.panel button:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.panel svg { width: 1.1em; height: 1.1em; display: block; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.panel hr { border: 0; height: 1px; background: var(--p-rule); margin: .46em 0; }
+.p-head { display: flex; align-items: center; justify-content: space-between; min-height: 1.69em; }
+.p-title { font-weight: 700; }
+.p-label { display: flex; align-items: center; height: 1.69em; font-weight: 600; color: var(--p-dim); }
+.p-note { color: var(--p-dim); line-height: 1.3; padding-bottom: .2em; }
+.p-num { font-variant-numeric: tabular-nums; }
+.p-dim { color: var(--p-dim); }
+.p-dev { display: flex; align-items: center; gap: .62em; width: 100%; height: 2.46em; }
+.p-dev > span:nth-child(2) { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-ico { width: 2em; height: 2em; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--p-fill); }
+.p-dev.active .p-ico { background: var(--blue); color: #fff; }
+.p-row { display: flex; align-items: center; justify-content: space-between; width: 100%; height: 1.69em; }
+.p-hit { position: relative; isolation: isolate; }
+.p-hit::before { content: ""; position: absolute; z-index: -1; inset: 0 -.69em; border-radius: .46em; background: var(--p-hover); opacity: 0; }
+.p-hit:hover::before, .p-hit:focus-visible::before { opacity: 1; }
+.p-hit.invite::before { opacity: 1; background: rgba(var(--invite),.1); box-shadow: 0 0 0 1px rgba(var(--invite),.6); animation: invite 1.6s ease-in-out infinite; }
+@keyframes invite { 50% { box-shadow: 0 0 0 1px rgba(var(--invite),.15), 0 0 1.4em rgba(var(--invite),.2); } }
+.p-i { width: 1.69em; height: 1.69em; flex: none; display: grid; place-items: center; color: var(--p-dim); border-radius: 50%; }
+.p-i:hover { color: var(--p-strong); }
+.p-i.on svg circle { fill: currentColor; } .p-i.on svg .g { stroke: var(--p-glyph); }
+.p-i[disabled] { opacity: .3; }
+.p-back { display: flex; align-items: center; gap: .3em; }
+.p-back svg { color: var(--p-dim); width: .95em; height: .95em; }
+.p-health { display: flex; align-items: center; gap: .4em; color: var(--p-dim); }
+.p-health i { width: .54em; height: .54em; border-radius: 50%; background: #30d158; }
+.p-health.slow i { background: #ff9f0a; }
+.p-health.idle i { background: var(--p-idle); }
+.p-spin { width: 1.15em; height: 1.15em; flex: none; border-radius: 50%; border: .16em solid var(--p-spin); border-top-color: var(--p-spin-top); animation: spin .8s linear infinite; }
+.p-grid { display: grid; grid-template-columns: 6em 1fr; gap: .46em .77em; align-items: center; padding: .15em 0 .2em; }
+.p-grid .p-note { grid-column: 1 / -1; font-size: .92em; padding-bottom: .3em; }
+.p-seg { display: inline-flex; justify-self: start; padding: 1px; border-radius: .46em; background: var(--p-seg); }
+.p-seg button { display: grid; place-items: center; height: 1.6em; padding: 0 .82em; border-radius: .4em; }
+.p-seg button[aria-pressed=true] { background: var(--p-seg-on); box-shadow: 0 .5px 1.5px var(--p-seg-shade); }
+.p-sw { display: block; position: relative; width: 2em; height: 1.15em; border-radius: 1em; background: var(--p-sw); transition: background .15s; }
+.p-sw::after { content: ""; position: absolute; left: 1px; top: 1px; width: calc(1.15em - 2px); height: calc(1.15em - 2px); border-radius: 50%; background: #fff; transition: transform .15s; }
+.p-sw[aria-checked=true] { background: var(--blue); }
+.p-sw[aria-checked=true]::after { transform: translateX(.85em); }
+
+/* After the tour: the credits. */
+section.wrap { padding-top: 120px; text-align: center; container-type: inline-size; }
+section.wrap h2 { font-size: clamp(31px, 7cqi, 52px); }
+.sub { color: var(--dim); max-width: 34em; margin: 16px auto 0; text-wrap: balance; }
+.term + .sub { margin-top: 24px; }
+.sub code { font: .92em var(--mono); color: var(--ink); }
+.roll { margin: 44px auto 0; max-width: 860px; }
+.roll div { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; padding: 10px 0; align-items: center; opacity: 0; transform: translateY(20px); transition: opacity .7s calc(var(--i) * 90ms), transform .7s calc(var(--i) * 90ms); }
+.roll.in div { opacity: 1; transform: none; }
+.roll dt { text-align: right; font: 500 12.5px var(--mono); letter-spacing: .13em; text-transform: uppercase; color: var(--dim); }
+.roll dd { margin: 0; text-align: left; font-size: 19px; font-weight: 620; letter-spacing: -.01em; }
+.how { font: italic 19px/1.5 var(--serif); color: var(--warm-hi); max-width: 30em; margin: 26px auto 0; }
+.how + .sub { margin-top: 46px; } .sub + .roll { margin-top: 26px; }
+
+.term { max-width: 780px; margin: 40px auto 0; text-align: left; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: rgba(8,9,14,.84); box-shadow: 0 40px 100px -40px #000; overflow: hidden; }
+.term-bar { display: flex; align-items: center; gap: 7px; padding: 11px 14px; background: rgba(255,255,255,.05); border-bottom: 1px solid var(--line); }
+.term-bar i { width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; }
+.term-bar i:nth-child(2) { background: #febc2e; } .term-bar i:nth-child(3) { background: #28c840; }
+.term-bar span { flex: 1; text-align: center; font: 600 12.5px var(--sans); color: var(--faint); }
+.copy { all: unset; cursor: pointer; font: 600 12px var(--sans); color: var(--dim); border: 1px solid var(--line); border-radius: 7px; padding: 3px 10px; }
+.copy:hover { color: var(--ink); }
+.term pre { margin: 0; padding: 18px 20px 2px; font: 14.5px/1.75 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; min-height: 5.6em; max-height: 24em; overflow-y: auto; tab-size: 4; }
+.term pre .p { color: var(--teal); -webkit-user-select: none; user-select: none; }
+.term pre .o { color: var(--dim); }
+.term-in { display: flex; gap: 9px; padding: 0 20px 18px; font: 14.5px/1.75 var(--mono); }
+.term-in span { color: var(--teal); }
+.term-in input { all: unset; flex: 1; min-width: 0; caret-color: var(--teal); }
+.term-in input::placeholder { color: var(--faint); }
+.ways { margin-top: 28px; }
+.fine { max-width: 700px; margin: 44px auto 0; color: var(--dim); font-size: 14.5px; text-wrap: balance; }
+.get { margin-top: 26px; }
+.get p { max-width: 34em; margin: 16px auto 0; color: var(--dim); font-size: 14.5px; text-wrap: balance; }
+.snip { display: inline-flex; align-items: center; gap: 12px; max-width: 100%; box-sizing: border-box; margin-top: 18px; padding: 9px 10px 9px 14px; text-align: left; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.snip code { font: 13.5px/1.5 var(--mono); color: var(--ink); overflow-wrap: anywhere; }
+.snip .copy { flex: none; }
+footer { text-align: center; color: var(--dim); font-size: 14px; padding: 150px 24px 40px; }
+.end { font: italic 400 clamp(64px, 11vw, 150px)/1 "Bodoni 72", Didot, var(--serif); color: var(--ink); letter-spacing: -.01em; margin-bottom: 44px; }
+footer svg { width: 22px; height: 22px; vertical-align: -6px; margin-right: 6px; }
+.post { margin-top: 62vh; padding-bottom: 60px; font: italic 17px var(--serif); color: var(--warm); }
+.post span { display: block; font: 600 11px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--faint); margin-bottom: 10px; }
+
+/* Browsing through the TV: the page itself, two seconds late. */
+html.lagging { scroll-behavior: auto; }
+html.lagging, html.lagging * { cursor: none !important; }
+.lagframe { position: fixed; inset: 0; z-index: 90; pointer-events: none; box-shadow: inset 0 0 0 12px #0c0c10, inset 0 0 0 13px rgba(255,255,255,.14), inset 0 0 160px rgba(0,0,0,.75); background: repeating-linear-gradient(rgba(255,255,255,.035) 0 1px, transparent 1px 3px); font: 600 13px var(--mono); color: var(--ink); }
+.lagframe b, .lagframe span { position: absolute; left: 30px; top: 28px; padding: 6px 11px; border-radius: 7px; background: rgba(0,0,0,.6); font-weight: 600; }
+.lagframe i { font-style: normal; color: var(--butter); }
+.lagframe span { top: auto; bottom: 28px; left: 50%; translate: -50% 0; color: var(--dim); }
+.ghost { position: fixed; left: 0; top: 0; z-index: 91; width: 15px; height: 22px; margin: -1px 0 0 -1px; pointer-events: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
+.toast { position: fixed; left: 50%; top: 16%; z-index: 92; translate: -50% 0; max-width: calc(100vw - 32px); padding: 14px 22px; border-radius: 12px; color: var(--ink); background: rgba(0,0,0,.78); border: 1px solid var(--line); font: 600 19px var(--sans); text-align: center; pointer-events: none; opacity: 0; transition: opacity .3s; }
+.toast.show { opacity: 1; }
+[hidden] { display: none !important; }
+
+/* By day the grain is dark, the TV throws less light on the wall and the terminal is solid. */
+[data-theme="light"] .grain { filter: invert(1); opacity: .05; }
+[data-theme="light"] .glow { opacity: .34; }
+[data-theme="light"] .term { background: #0c0d13; box-shadow: 0 40px 90px -45px rgba(60,50,80,.8); }
+[data-theme="light"] nav svg:first-child, [data-theme="light"] footer svg { filter: drop-shadow(0 1px 2px rgba(60,50,80,.3)); }
+
+/* Small screens: the room sticks to the top and the story scrolls beneath it. */
+@media (max-width: 899px) and (min-height: 561px), (max-width: 639px) {
+  :root { --stage: min(100%, 520px, 52vh); }   /* never more than half the height: the story needs the rest */
+  .wall { --wx: 50%; --wy: 16%; }
+  nav { position: static; } nav .wrap { height: 58px; padding-right: 24px; } nav a { margin-left: auto; }
+  .tour { display: block; }
+  .pin { position: sticky; z-index: 6; height: auto; display: block; margin: 0 -24px; padding: 8px 24px 12px; background: var(--pin); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); border-bottom: 1px solid var(--line); }
+  .stage { margin: 0 auto; aspect-ratio: 100 / 91; }
+  .glow { opacity: .4; }
+  .mac { left: 0; top: 62cqw; width: 46cqw; }
+  .cap { font-size: 3.1cqw; white-space: normal; gap: 1.1cqw; }
+  .cap i { display: none; } .cap b { display: block; }
+  .who { align-items: flex-start; gap: 1.2cqw; }
+  .cap.t { left: 57cqw; right: 0; top: 62.5cqw; justify-items: start; }
+  .cap.m { left: 57cqw; right: 0; top: 78cqw; width: auto; justify-items: start; }
+  .spk { width: 6cqw; height: 6cqw; margin-top: -.8cqw; } .spk svg { width: 4.2cqw; height: 4.2cqw; }
+  .gauge { width: 100%; height: .8cqw; }
+  .ch { min-height: 0; padding: 40px 0 64px; opacity: 1 !important; }
+  .ch.hero { padding-top: 26px; }
+  .roll div { grid-template-columns: 1fr; gap: 3px; } .roll dt, .roll dd { text-align: center; }
+  section.wrap { padding-top: 90px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .grain, .cue::after, .plug.tease::after, .p-hit.invite::before, .microwave * { animation: none !important; }
+  .late em { animation: none; opacity: 1; filter: none; } .late i { display: none; }
+  .roll div { opacity: 1; transform: none; transition: none; }
+}
+</style>
+</head>
+<body>
+<div class="wall" id="wall"></div>
+<div class="grain"></div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="icon-back" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f8f8f8"/><stop offset="1" stop-color="#cdcdcd"/></linearGradient>
+    <symbol id="app" viewBox="0 0 1024 1024">
+      <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#icon-back)"/>
+      <g transform="translate(512 512) scale(.796) translate(-512 -512)">
+        <rect x="336.5" y="210.5" width="540" height="414" rx="93.6" fill="#5c5c5c" fill-opacity=".82"/>
+        <rect x="147.5" y="381.5" width="540" height="432" rx="93.6" fill="#222" fill-opacity=".95"/>
+        <path d="M305.9 673.1 421.1 529.1M442.7 687.5 507.5 608.3" fill="none" stroke="#fff" stroke-width="54" stroke-linecap="round"/>
+      </g>
+    </symbol>
+  </defs>
+</svg>
+
+<nav><div class="wrap">
+  <svg aria-hidden="true"><use href="#app"/></svg>
+  <strong>DillyDally</strong>
+  <a href="https://github.com/martynaskadisa/dillydally">GitHub</a>
+  <button id="sound" aria-pressed="false">Sound off</button>
+  <button id="theme" aria-label="Switch to light mode"></button>
+</div></nav>
+
+<main class="tour wrap">
+  <div class="pin">
+    <div class="stage" id="stage">
+      <canvas class="glow" id="glow" aria-hidden="true"></canvas>
+      <figure class="tv" id="tvFig">
+        <div class="bezel"><canvas id="tv" role="img" aria-label="The TV. It shows what the Mac shows, about two seconds later."></canvas></div>
+        <i class="led"></i>
+      </figure>
+      <figure class="mac">
+        <div class="bezel"><canvas id="mac" role="img" aria-label="The Mac. Its desktop has a movie playing in a window, and a shopping list."></canvas></div>
+      </figure>
+      <canvas class="air" id="air" aria-hidden="true"></canvas>
+      <div class="cap t">
+        <div class="who"><button class="spk" id="spkTv" aria-pressed="false" aria-label="The TV's sound"></button><span>Your TV<i> · </i><b id="behind">no signal</b></span></div>
+        <span class="gauge" id="gauge"><i></i></span>
+      </div>
+      <div class="cap m">
+        <div class="who"><button class="spk" id="spkMac" aria-pressed="false" aria-label="The Mac's sound"></button><span>Your Mac<i> · </i><b>live</b></span></div>
+      </div>
+      <div class="panel" id="panel" aria-label="DillyDally's panel, rebuilt for this page"></div>
+      <button class="plug" id="plug" aria-label="The HDMI plug. Drag it into the Mac, or press to plug it in."></button>
+    </div>
+  </div>
+
+  <div class="story">
+    <section class="ch hero on" data-ch="hero" id="top">
+      <h1><span>Cast your Mac</span><span>to a TV with</span><span class="late"><em>no AirPlay</em><i aria-hidden="true">buffering…</i></span></h1>
+      <p>DillyDally is a free menu-bar app that casts your Mac's screen to a TV over DLNA, in up to 4K at 60 frames a second, with sound. It's for when the TV doesn't support AirPlay and you don't have a cable at hand.</p>
+      <div id="slot"></div>
+      <div class="row">
+        <button class="btn go" id="start">Start the demo</button>
+        <a class="btn" href="#install">Install</a>
+      </div>
+      <p class="dir" id="d-hero"></p>
+      <p class="cue">Scroll to try it</p>
+    </section>
+
+    <section class="ch" data-ch="display" id="display">
+      <h2>macOS sees your TV as a display</h2>
+      <p>The display is called DillyDally, and the Screen Mirroring menu you already know decides what goes on it. The TV can mirror your whole screen, show one window, or be a second desktop.</p>
+      <div class="row"><span class="seg" id="mode">
+        <button data-v="mirror" aria-pressed="true">Entire Screen</button>
+        <button data-v="window" aria-pressed="false">Window or App</button>
+        <button data-v="extended" aria-pressed="false">Extended Display</button>
+      </span></div>
+      <p class="dir" id="d-display"></p>
+    </section>
+
+    <section class="ch" data-ch="buffer" id="buffer">
+      <h2>The movie plays on through Wi-Fi hiccups</h2>
+      <p>The TV plays about two seconds behind your Mac. That's a buffer of video it hasn't shown yet. When the Wi-Fi has a hiccup, the TV plays from the buffer instead of freezing. Microwaves and Wi-Fi share a frequency, which makes popcorn a good test.</p>
+      <div class="row">
+        <button class="microwave" id="micro" aria-pressed="false">
+          <svg viewBox="0 0 200 114" aria-hidden="true">
+            <rect class="mw-foot" x="20" y="104" width="24" height="8" rx="2"/><rect class="mw-foot" x="156" y="104" width="24" height="8" rx="2"/>
+            <rect class="mw-body" x="1" y="1" width="198" height="104" rx="12"/>
+            <rect class="mw-glass" x="12" y="12" width="126" height="82" rx="8"/>
+            <line class="mw-plate" x1="42" y1="88" x2="108" y2="88"/>
+            <g class="mw-pops"><circle cx="58" cy="42" r="3.2"/><circle cx="75" cy="32" r="3.6"/><circle cx="93" cy="40" r="3"/><circle cx="66" cy="29" r="2.6"/><circle cx="85" cy="27" r="2.8"/></g>
+            <g class="mw-bag"><path d="M61 87 65 50q10-7 20 0l4 37z"/><path class="mw-band" d="M65.5 64h19"/></g>
+            <rect class="mw-lcd" x="150" y="14" width="38" height="20" rx="4"/>
+            <text class="mw-time" id="mwTime" x="169" y="28" text-anchor="middle">0:09</text>
+            <circle class="mw-dial" cx="169" cy="64" r="13"/><line class="mw-tick" x1="169" y1="64" x2="169" y2="54"/>
+          </svg>
+          <span id="mwLabel">Make popcorn</span>
+        </button>
+        <div class="dials">
+          <span class="lbl">Buffer</span>
+          <span class="seg" id="bufseg">
+            <button data-v="0" aria-pressed="false">Off</button>
+            <button data-v="2" aria-pressed="true">2 s</button>
+            <button data-v="5" aria-pressed="false">5 s</button>
+            <button data-v="10" aria-pressed="false">10 s</button>
+          </span>
+          <span class="tally" id="tally" aria-live="polite"></span>
+        </div>
+      </div>
+      <p class="more">If your Wi-Fi is worse than a microwave, raise the buffer to five or ten seconds.</p>
+      <p class="dir" id="d-buffer"></p>
+    </section>
+
+    <section class="ch" data-ch="cable" id="cable">
+      <h2>For when you can't find the HDMI cable</h2>
+      <p>You want to watch a movie on that weird older TV, the one with no AirPlay. The HDMI cable isn't where you left it. DillyDally gets the movie there over Wi-Fi, so you can stop looking. If the cable shows up, it's about two seconds faster, and you can plug one in here to compare.</p>
+      <div class="row"><span class="seg" id="link">
+        <button data-v="cable" aria-pressed="false">HDMI cable</button>
+        <button data-v="dilly" aria-pressed="true">DillyDally</button>
+      </span></div>
+      <dl class="score">
+        <div><dt>Delay</dt><dd id="s1"></dd></div>
+        <div><dt>What you need</dt><dd id="s2"></dd></div>
+        <div><dt>Where you can sit</dt><dd id="s3"></dd></div>
+      </dl>
+            <p class="dir" id="d-cable"></p>
+    </section>
+
+    <section class="ch" data-ch="games" id="games">
+      <h2>Made for movies, terrible at Pong</h2>
+      <p>A movie has no idea it's two seconds late. A TV show, the playoffs, your vacation photos and Monday's slides don't either. A game finds out right away, and a round of Pong on the TV will show you how.</p>
+      <div class="row">
+        <button class="btn go" id="play">Play Pong on the TV</button>
+        <button class="btn" id="cheat">Plug in the cable</button>
+      </div>
+      <p id="lagline">Or <button class="link" id="lag">browse this page through the TV</button> for ten seconds.</p>
+      <p class="dir" id="d-games"></p>
+    </section>
+
+    <section class="ch" data-ch="real" id="real">
+      <h2>Try it with your own screen</h2>
+      <p>This page can play your real screen on its TV. Your browser asks which screen, window or tab to share, and nothing you share leaves the browser.</p>
+      <div class="row"><button class="btn go" id="share">Cast my real screen</button></div>
+      <p class="dir" id="d-real"></p>
+    </section>
+  </div>
+</main>
+
+<section class="wrap" id="cast">
+  <h2>How it works</h2>
+  <p class="how">Your TV already plays video files from the network. DillyDally makes your screen look like one that never ends, so the TV needs nothing installed and the video stays on your own network.</p>
+  <p class="sub"><span class="aside">The cast, in order of appearance</span></p>
+  <dl class="roll" id="roll">
+    <div><dt>The display that isn't there</dt><dd>CGVirtualDisplay</dd></div>
+    <div><dt>Camera</dt><dd>ScreenCaptureKit</dd></div>
+    <div><dt>Editing</dt><dd>ffmpeg, with VideoToolbox</dd></div>
+    <div><dt>Film stock</dt><dd>HEVC and AAC, in MPEG-TS</dd></div>
+    <div><dt>Distribution</dt><dd>plain HTTP, over your Wi-Fi</dd></div>
+    <div><dt>Projectionist</dt><dd>DLNA, in the business since 2003</dd></div>
+    <div><dt>Stunts</dt><dd>two private macOS interfaces</dd></div>
+    <div><dt>Not appearing in this movie</dt><dd>an HDMI cable</dd></div>
+  </dl>
+</section>
+
+<section class="wrap" id="install">
+  <h2>Install on your Mac</h2>
+  <p class="sub">DillyDally is free and open source. Choose how to install it.</p>
+  <div class="ways"><span class="seg" id="way">
+    <button data-v="brew" aria-pressed="true">Homebrew</button>
+    <button data-v="download" aria-pressed="false">Download</button>
+    <button data-v="source" aria-pressed="false">From source</button>
+  </span></div>
+  <div class="get" id="get" hidden>
+    <a class="btn go" href="https://github.com/martynaskadisa/dillydally/releases/latest/download/DillyDally.dmg">Download DillyDally.dmg</a>
+    <p>Open the disk image and drag DillyDally to Applications. Apple hasn't notarized the app, so run the line below once before you open it.</p>
+    <div class="snip"><code>xattr -dr com.apple.quarantine /Applications/DillyDally.app</code><button class="copy" id="snipCopy">Copy</button></div>
+  </div>
+  <div class="term">
+    <div class="term-bar"><i></i><i></i><i></i><span>zsh</span><button class="copy" id="copy">Copy</button></div>
+    <pre id="termOut" aria-live="polite"></pre>
+    <label class="term-in" hidden><span>$</span><input id="termIn" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="try: dillydally --help" aria-label="A pretend terminal"></label>
+  </div>
+  <p class="sub" id="cli">The app also comes with <code>dillydally</code>, a command-line tool that casts without the menu bar. The terminal above understands it, so type a command.</p>
+  <p class="fine">Built for and tested on one TV, a Panasonic TH-50MX900. Other Vieras with a DLNA media renderer may work.</p>
+</section>
+
+<footer>
+  <p class="end">The End</p>
+  <p><svg aria-hidden="true"><use href="#app"/></svg>DillyDally · <a href="https://github.com/martynaskadisa/dillydally">source on GitHub</a></p>
+  <p class="post"><span>After-credits scene</span>The cable was behind the TV the whole time. Nobody got up.</p>
+</footer>
+
+<div class="lagframe" id="lagframe" hidden><b>DLNA · 2 s behind · <i id="lagClock">0:10</i></b><span>esc to give up</span></div>
+<svg class="ghost" id="ghost" viewBox="0 0 12 18" hidden><path d="M1 1v14l3.6-3.2 2.3 5.2 2.2-1-2.3-5.1H11z" fill="#000" stroke="#fff" stroke-width="1.2" stroke-linejoin="round"/></svg>
+<div class="toast" id="toast" role="status"></div>
+<noscript><p style="text-align:center;padding:40px">This page's demo needs JavaScript. The app itself is <a href="https://github.com/martynaskadisa/dillydally">on GitHub</a>.</p></noscript>
+
+<script>
+(() => {
+'use strict';
+
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const now = () => performance.now() / 1000;
+const sleep = ms => new Promise(done => setTimeout(done, ms));
+const hsl = (h, s, l, a = 1) => `hsla(${h},${s}%,${l}%,${a})`;
+
+// Night and day. The page follows the system until the button in the nav says
+// otherwise, and the room's canvas takes its colors from here.
+const PAINT = {
+  dark: { ok: '63,224,197', lost: '255,107,94', wave: '255,209,102', gain: 1, beam: ['rgba(255,255,255,.2)', 'rgba(255,255,255,.03)'], shade: 'rgba(0,0,0,.6)' },
+  light: { ok: '8,145,126', lost: '210,56,42', wave: '196,122,0', gain: 1.7, beam: ['rgba(23,20,35,.13)', 'rgba(23,20,35,.02)'], shade: 'rgba(60,50,80,.35)' },
+};
+const SUN = '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.9"/><path d="M8 1.4v1.7M8 12.9v1.7M1.4 8h1.7M12.9 8h1.7M3.3 3.3l1.2 1.2M11.5 11.5l1.2 1.2M3.3 12.7l1.2-1.2M11.5 4.5l1.2-1.2"/></svg>',
+      MOON = '<svg viewBox="0 0 16 16"><path d="M13.4 9.7A5.7 5.7 0 0 1 6.3 2.6a5.7 5.7 0 1 0 7.1 7.1z"/></svg>';
+const root = document.documentElement, daylight = matchMedia('(prefers-color-scheme: light)');
+let paint = PAINT.dark;
+const kept = () => { try { return localStorage.getItem('theme'); } catch (error) { return null; } };
+function theme(to) {
+  root.dataset.theme = to; paint = PAINT[to];
+  $('#theme').innerHTML = to === 'light' ? MOON : SUN;
+  $('#theme').setAttribute('aria-label', `Switch to ${to === 'light' ? 'dark' : 'light'} mode`);
+}
+$('#theme').addEventListener('click', () => {
+  const to = root.dataset.theme === 'light' ? 'dark' : 'light';
+  try { to === (daylight.matches ? 'light' : 'dark') ? localStorage.removeItem('theme') : localStorage.setItem('theme', to); } catch (error) { /* a private window: the choice lasts until the page is closed */ }
+  theme(to);
+});
+daylight.addEventListener('change', e => { if (!kept()) theme(e.matches ? 'light' : 'dark'); });
+theme(root.dataset.theme === 'light' ? 'light' : 'dark');
+const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const fine = matchMedia('(hover: hover) and (pointer: fine)').matches;
+const narrow = matchMedia('(max-width: 899px) and (min-height: 561px), (max-width: 639px)'), short = matchMedia('(max-height: 560px)');
+const canShare = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+const anchors = !!(window.CSS && CSS.supports('overflow-anchor', 'auto'));
+const SANS = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+const MONO = 'ui-monospace, Menlo, Consolas, monospace';
+
+const stage = $('#stage'), panel = $('#panel'), wall = $('#wall'), tvFig = $('#tvFig'), plugBtn = $('#plug');
+const macCanvas = $('#mac'), tvCanvas = $('#tv'), airCanvas = $('#air'), glowCanvas = $('#glow');
+const mc = macCanvas.getContext('2d'), tc = tvCanvas.getContext('2d'), air = airCanvas.getContext('2d'), gc = glowCanvas.getContext('2d');
+
+// ---------- What the room is doing ----------
+//
+// Both screens are drawn from this and from the time, so the TV only ever has
+// to draw the Mac's past: a sample of it from as long ago as the TV is behind.
+
+const DEFAULTS = { size: 'auto', fps: 60, codec: 'hevc', buffer: 2, sound: true };   // as the app's are
+const S = Object.assign({
+  cast: 'off',        // off, starting or on
+  step: '',
+  link: 'dilly',      // dilly or cable
+  mode: 'mirror',     // what macOS has the TV doing: mirror, window or extended
+  chosen: 'film',     // the window shown in window mode
+  moved: false,       // extended mode: the movie has been put full screen on the TV
+  scene: 'desk',      // what is on the Mac: its desk, the game, or the visitor's real screen
+  chapter: 'hero',
+  page: 'main', info: false, searching: false,   // the panel's own
+  seen: true,
+}, DEFAULTS);
+
+const TV_NAME = '50MX900_Series';
+const FILM = .46, BAR = .058, NOTE = .2, GLYPH = .805, PADDLE = .22;   // widths as parts of the screen's; the title bar as a part of its window's
+const FILM_H = FILM * (BAR + 9 / 16) * 16 / 9, NOTE_H = NOTE * 16 / 9 * .92;
+const OFF = .3;       // what "no buffer" still costs: the TV has to hold something to decode
+
+const live = { cx: .62, cy: .6, film: { x: .25, y: .2 }, note: { x: .76, y: .14 }, top: 'film' };
+const hist = [];
+const input = { last: -10, drag: null };
+const tv = { D: 2, R: 2, stalled: false, waiting: false, onAt: -10, offAt: 0, osdAt: -10, party: -10, fill: null };
+const micro = { on: false, due: false, log: false, t0: 0, i: 0, pop: 0, rode: 0, froze: 0, low: 9, down: false, big: false, hit: false, left: 9 };
+const game = { bx: .5, by: .5, vx: 0, vy: 0, py: .5, qy: .5, aim: .5, you: 0, cpu: 0, hold: 0 };
+const real = { on: false, video: null, stream: null, frames: [], spare: [], bitmaps: !!window.createImageBitmap, busy: false, last: 0, kind: '' };
+const snd = { ctx: null, mac: false, tv: false, n: { mac: null, tv: null }, g: { mac: null, tv: null } };
+const geo = { w: 0, h: 0, mac: null, tv: null, panel: null, dpr: 1 };
+const mouse = { cx: -999, cy: -999, x: -999, y: -999, vx: 0, vy: 0 };
+const packets = [];
+const said = {}, visits = {}, cues = {};
+let castRun = 0, owed = 0, clock = '';
+
+// ---------- Drawing ----------
+
+function fit(canvas) {
+  const r = canvas.getBoundingClientRect(), w = Math.max(2, Math.round(r.width * geo.dpr)), h = Math.max(2, Math.round(r.height * geo.dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+
+function still(w, h, draw) {
+  const el = document.createElement('canvas');
+  el.width = w; el.height = h;
+  draw(el.getContext('2d'), w, h);
+  return el;
+}
+
+function box(c, x, y, w, h, r) { c.beginPath(); c.roundRect(x, y, w, h, r); }
+
+function pool(c, x, y, r, h, s, l, a) {   // a soft light
+  const g = c.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, hsl(h, s, l, a)); g.addColorStop(1, hsl(h, s, l, 0));
+  c.fillStyle = g; c.fillRect(x - r, y - r, 2 * r, 2 * r);
+}
+
+const walls = {
+  mac: still(640, 360, (c, w, h) => { c.fillStyle = '#141a3a'; c.fillRect(0, 0, w, h); pool(c, w * .2, h * .1, w * .7, 226, 57, 50, 1); pool(c, w * .9, h * .9, w * .6, 281, 62, 53, 1); }),
+  tv: still(640, 360, (c, w, h) => { c.fillStyle = '#0e1830'; c.fillRect(0, 0, w, h); pool(c, w * .8, h * .1, w * .7, 177, 81, 31, 1); pool(c, w * .1, h * .9, w * .6, 235, 56, 51, 1); }),
+};
+
+// The menu-bar mark, as glyph.swift draws it: outlined when idle, solid while casting.
+function mark(filled) {
+  return still(96, 96, c => {
+    const screen = (x, y, w, h, r) => { const p = new Path2D(); p.roundRect(x, y, w, h, r); return p; };
+    const shine = new Path2D('M6.4 15.6 9.6 11.6M10.2 16 12 13.8');
+    c.scale(4, 4); c.strokeStyle = c.fillStyle = '#fff'; c.lineWidth = 1.5; c.lineCap = c.lineJoin = 'round';
+    c.save();   // the back screen, with a gap where the front one covers it
+    const gap = new Path2D(); gap.rect(-1, -1, 26, 26); gap.addPath(screen(1.4, 6.9, 16.2, 13.2, 3));
+    c.clip(gap, 'evenodd');
+    if (filled) c.fill(screen(7.25, 2.75, 15, 11.5, 2.6)); else c.stroke(screen(8, 3.5, 13.5, 10, 2));
+    c.restore();
+    if (filled) { c.fill(screen(2, 7.5, 15, 12, 2.6)); c.globalCompositeOperation = 'destination-out'; c.stroke(shine); }
+    else { c.stroke(screen(2.75, 8.25, 13.5, 10.5, 2)); c.stroke(shine); }
+  });
+}
+const marks = { line: mark(false), solid: mark(true) };
+const ARROW = new Path2D('M1 1v14l3.6-3.2 2.3 5.2 2.2-1-2.3-5.1H11z');
+
+const hueAt = t => (t * 22 + 205) % 360;
+
+// The movie: a leader, with a hand that goes round once a second and the seconds
+// counted down, so that the TV being behind can be read off as a number.
+function film(c, x, y, w, h, t) {
+  c.save(); c.beginPath(); c.rect(x, y, w, h); c.clip();
+  c.fillStyle = '#090a14'; c.fillRect(x, y, w, h);
+  const hue = hueAt(t);
+  pool(c, x + w * (.5 + .32 * Math.cos(t * .6)), y + h * (.5 + .3 * Math.sin(t * .45)), w * .5, hue, 90, 58, .95);
+  pool(c, x + w * (.5 - .3 * Math.cos(t * .37)), y + h * (.5 - .34 * Math.sin(t * .52)), w * .36, (hue + 60) % 360, 90, 62, .7);
+  const cx = x + w / 2, cy = y + h / 2, r = h * .37, turn = (t - Math.floor(t)) * 2 * Math.PI - Math.PI / 2, lw = Math.max(1, h * .007);
+  c.lineWidth = lw; c.strokeStyle = 'rgba(255,255,255,.5)';
+  c.beginPath(); c.moveTo(x, cy); c.lineTo(x + w, cy); c.moveTo(cx, y); c.lineTo(cx, y + h); c.stroke();
+  c.fillStyle = 'rgba(255,255,255,.15)'; c.beginPath(); c.moveTo(cx, cy); c.arc(cx, cy, r, -Math.PI / 2, turn); c.closePath(); c.fill();
+  c.beginPath(); c.arc(cx, cy, r, 0, 7); c.moveTo(cx + r * .84, cy); c.arc(cx, cy, r * .84, 0, 7); c.stroke();
+  c.strokeStyle = '#fff'; c.lineWidth = lw * 1.8; c.lineCap = 'round';
+  c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + r * Math.cos(turn), cy + r * Math.sin(turn)); c.stroke();
+  c.fillStyle = '#fff'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.font = `800 ${h * .46}px ${SANS}`;
+  c.fillText(9 - Math.floor(t) % 10, cx, cy + h * .025);
+  c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.font = `600 ${h * .07}px ${MONO}`; c.fillStyle = 'rgba(255,255,255,.88)';
+  c.fillText(`${String(Math.floor(t / 60) % 60).padStart(2, '0')}:${(Math.floor(t % 60 * 10) / 10).toFixed(1).padStart(4, '0')}`, x + w * .04, y + h * .93);
+  c.restore();
+}
+
+function filmWindow(c, W, H, x, y, t) {
+  const w = W * FILM, bar = w * BAR, h = bar + w * 9 / 16, r = w * .026;
+  x *= W; y *= H;
+  if (x > W || x + w < 0) return;
+  c.save(); c.shadowColor = 'rgba(0,0,0,.55)'; c.shadowBlur = W * .035; c.shadowOffsetY = W * .012; c.fillStyle = '#1c1d24'; box(c, x, y, w, h, r); c.fill(); c.restore();
+  c.save(); box(c, x, y, w, h, r); c.clip();
+  c.fillStyle = '#2a2b33'; c.fillRect(x, y, w, bar);
+  ['#ff5f57', '#febc2e', '#28c840'].forEach((color, i) => { c.fillStyle = color; c.beginPath(); c.arc(x + bar * (.58 + i * .62), y + bar / 2, bar * .2, 0, 7); c.fill(); });
+  c.fillStyle = 'rgba(255,255,255,.72)'; c.font = `600 ${bar * .5}px ${SANS}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText('That Movie.mp4', x + w / 2, y + bar * .54);
+  film(c, x, y + bar, w, w * 9 / 16, t);
+  c.restore();
+  c.strokeStyle = 'rgba(255,255,255,.17)'; c.lineWidth = Math.max(1, W * .0012); box(c, x, y, w, h, r); c.stroke();
+}
+
+// The other window on the desk, which "Window or App" keeps off the TV.
+function sticky(c, x, y, w, h) {
+  c.save(); c.shadowColor = 'rgba(0,0,0,.45)'; c.shadowBlur = w * .14; c.shadowOffsetY = w * .05; c.fillStyle = '#fbe36a'; c.fillRect(x, y, w, h); c.restore();
+  c.fillStyle = '#efd04a'; c.fillRect(x, y, w, h * .11);
+  c.fillStyle = '#40370f'; c.textAlign = 'left'; c.textBaseline = 'alphabetic'; c.font = `${h * .125}px "Marker Felt", "Noteworthy", "Comic Sans MS", cursive`;
+  ['Movie night', '✓ popcorn', '✓ couch', '✗ HDMI cable'].forEach((line, i) => c.fillText(line, x + w * .09, y + h * (.33 + i * .19)));
+}
+
+function menubar(c, W, H, t) {
+  const h = H * .064, f = h * .56, mid = h * .54;
+  c.fillStyle = 'rgba(16,18,34,.5)'; c.fillRect(0, 0, W, h);
+  c.fillStyle = 'rgba(255,255,255,.95)'; c.textBaseline = 'middle'; c.textAlign = 'left';
+  let x = W * .018;
+  ['Player', 'File', 'Edit', 'View', 'Window', 'Help'].forEach((title, i) => {
+    c.font = `${i ? 500 : 700} ${f}px ${SANS}`; c.fillText(title, x, mid); x += c.measureText(title).width + f * 1.15;
+  });
+  c.font = `500 ${f}px ${SANS}`; c.textAlign = 'right'; c.fillText(clock, W * .985, mid);
+  const size = h * .9, gx = W * GLYPH - size / 2;
+  if (geo.panel) { c.fillStyle = 'rgba(255,255,255,.2)'; box(c, gx - size * .22, h * .1, size * 1.44, h * .8, h * .22); c.fill(); }   // the panel is open, in the room
+  const solid = S.cast === 'on' || (S.cast === 'starting' && Math.floor(t / .6) % 2 === 0);   // it blinks while a cast starts
+  c.drawImage(solid ? marks.solid : marks.line, gx, (h - size) / 2, size, size);
+  const wx = W * (GLYPH + .048), wy = h * .76;   // Wi-Fi
+  c.strokeStyle = c.fillStyle = 'rgba(255,255,255,.95)'; c.lineWidth = h * .09; c.lineCap = 'round';
+  for (const k of [.24, .42, .6]) { c.beginPath(); c.arc(wx, wy, h * k, -Math.PI * .75, -Math.PI * .25); c.stroke(); }
+  c.beginPath(); c.arc(wx, wy - h * .03, h * .06, 0, 7); c.fill();
+}
+
+function pointer(c, x, y, W) {
+  const k = W * .0024;
+  c.save(); c.translate(x - k, y - k); c.scale(k, k);
+  c.lineJoin = 'round'; c.lineWidth = 1.6; c.strokeStyle = '#fff'; c.fillStyle = '#000';
+  c.shadowColor = 'rgba(0,0,0,.5)'; c.shadowBlur = 3 * k; c.shadowOffsetY = k;
+  c.stroke(ARROW); c.shadowColor = 'transparent'; c.fill(ARROW);
+  c.restore();
+}
+
+// A desktop. Side 1 is the TV as a display of its own, to the right of the Mac's.
+function desk(c, W, H, s, t, side) {
+  c.drawImage(side ? walls.tv : walls.mac, 0, 0, W, H);
+  for (const id of s.top === 'film' ? ['note', 'film'] : ['film', 'note']) {
+    if (id === 'note') sticky(c, (s.nx - side) * W, s.ny * H, NOTE * W, NOTE_H * H);
+    else if (!s.moved) filmWindow(c, W, H, s.fx - side, s.fy, t);
+  }
+  menubar(c, W, H, t);
+  pointer(c, (s.cx - side) * W, s.cy * H, W);
+}
+
+// One window, as large as it fits: a window that is not the TV's shape gets black bars.
+function alone(c, W, H, s, t) {
+  if (s.chosen === 'film') return film(c, 0, 0, W, H, t);
+  c.fillStyle = '#000'; c.fillRect(0, 0, W, H);
+  sticky(c, (W - H / .92) / 2, 0, H / .92, H);
+}
+
+// With nothing plugged into it the TV bounces a label about, as TVs do. The
+// numbers are chosen so that after 36 seconds it meets a corner exactly.
+function noSignal(c, W, H, t) {
+  c.fillStyle = '#04050a'; c.fillRect(0, 0, W, H);
+  const lw = .27 * W, lh = .2 * H, ux = t * .137 + .068, uy = t * .19 + .16;
+  const wave = u => Math.abs((u % 2) - 1);
+  const x = wave(ux) * (W - lw), y = wave(uy) * (H - lh), hue = (Math.floor(ux) + Math.floor(uy)) * 67 % 360;
+  c.strokeStyle = hsl(hue, 85, 62, .4); c.lineWidth = Math.max(1, H * .004); box(c, x + lw * .02, y + lh * .04, lw * .96, lh * .92, lh * .16); c.stroke();
+  c.fillStyle = hsl(hue, 85, 62); c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.font = `800 ${H * .1}px ${SANS}`; c.fillText('HDMI 1', x + lw / 2, y + lh * .4);
+  c.font = `500 ${H * .046}px ${SANS}`; c.fillText('No signal', x + lw / 2, y + lh * .76);
+  return { hue, corner: Math.abs(ux - Math.round(ux)) < .005 && Math.abs(uy - Math.round(uy)) < .007 };
+}
+
+function confetti(c, W, H, age) {
+  for (let i = 0; i < 70; i++) {
+    const a = (i * 2.399) % (Math.PI / 2), k = age * (.35 + (i * .618 % 1) * .65);
+    c.fillStyle = hsl(i * 47 % 360, 90, 62, clamp(2.6 - age, 0, 1));
+    c.fillRect(k * Math.cos(a) * W * .9, (k * Math.sin(a) * .9 + age * age * .22) * H, W * .012, W * .007);
+  }
+}
+
+function spinner(c, x, y, r, t, part) {
+  c.lineWidth = r * .22; c.lineCap = 'round';
+  c.strokeStyle = 'rgba(255,255,255,.16)'; c.beginPath(); c.arc(x, y, r, 0, 7); c.stroke();
+  c.strokeStyle = '#fff'; c.beginPath();
+  if (part == null) c.arc(x, y, r, t * 5.5, t * 5.5 + 1.7); else c.arc(x, y, r, -Math.PI / 2, -Math.PI / 2 + Math.max(.02, part) * 2 * Math.PI);
+  c.stroke();
+}
+
+function waiting(c, W, H, t, part, label) {
+  c.fillStyle = '#04050a'; c.fillRect(0, 0, W, H);
+  spinner(c, W / 2, H * .46, H * .07, t, part);
+  c.fillStyle = 'rgba(255,255,255,.66)'; c.font = `500 ${H * .044}px ${SANS}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(label, W / 2, H * .64);
+}
+
+function pong(c, W, H, g) {
+  c.fillStyle = '#05060a'; c.fillRect(0, 0, W, H);
+  c.fillStyle = 'rgba(255,255,255,.22)';
+  for (let i = 0; i < 14; i++) c.fillRect(W / 2 - W * .003, H * (i + .25) / 14, W * .006, H * .036);
+  c.font = `700 ${H * .15}px ${MONO}`; c.textAlign = 'center'; c.textBaseline = 'top'; c.fillStyle = 'rgba(255,255,255,.8)';
+  c.fillText(g.you, W * .38, H * .06); c.fillText(g.cpu, W * .62, H * .06);
+  c.font = `600 ${H * .032}px ${MONO}`; c.fillStyle = 'rgba(255,255,255,.4)';
+  c.fillText('YOU', W * .38, H * .23); c.fillText('THE TV', W * .62, H * .23);
+  c.fillStyle = '#fff';
+  const pw = W * .014, ph = H * PADDLE, b = W * .018;
+  c.fillRect(W * .04 - pw / 2, g.py * H - ph / 2, pw, ph);
+  c.fillRect(W * .96 - pw / 2, g.qy * H - ph / 2, pw, ph);
+  c.fillRect(g.bx * W - b / 2, g.by * H - b / 2, b, b);
+}
+
+function fitIn(c, W, H, image, iw, ih) {
+  c.fillStyle = '#000'; c.fillRect(0, 0, W, H);
+  if (!iw || !ih) return;
+  const k = Math.min(W / iw, H / ih);
+  c.drawImage(image, (W - iw * k) / 2, (H - ih * k) / 2, iw * k, ih * k);
+}
+
+function realFrame(c, W, H, t) {
+  for (let i = real.frames.length - 1; i >= 0; i--) {
+    const f = real.frames[i];
+    if (f.t <= t) return fitIn(c, W, H, f.image, f.image.width, f.image.height);
+  }
+  waiting(c, W, H, now(), null, 'Buffering');
+}
+
+// What the TV is sent, for one moment of the Mac's.
+function picture(c, W, H, s, t) {
+  if (s.scene === 'game') pong(c, W, H, s.g);
+  else if (s.scene === 'real') realFrame(c, W, H, t);
+  else if (s.mode === 'window') alone(c, W, H, s, t);
+  else if (s.mode === 'extended' && s.moved) film(c, 0, 0, W, H, t);
+  else desk(c, W, H, s, t, s.mode === 'extended' ? 1 : 0);
+}
+
+function drawMac(t, s) {
+  const W = macCanvas.width, H = macCanvas.height, v = real.video;
+  if (S.scene === 'game') pong(mc, W, H, game);
+  else if (S.scene === 'real' && v && v.readyState >= 2) fitIn(mc, W, H, v, v.videoWidth, v.videoHeight);
+  else desk(mc, W, H, s, t, 0);
+}
+
+// H.264 cannot be encoded at 4K and 60 frames a second in real time, so the app drops to 30.
+function stream() {
+  const size = S.size === 'auto' ? '3840x2160' : S.size;
+  return { size, fps: S.codec === 'h264' && S.fps > 30 && size !== '1920x1080' ? 30 : S.fps };
+}
+
+function drawTV(t) {
+  const c = tc, W = tvCanvas.width, H = tvCanvas.height;
+  if (S.cast === 'off') {
+    const sign = noSignal(c, W, H, t - tv.offAt);
+    if (sign.corner && t - tv.party > 5) { tv.party = t; say('hero', 'It hit the corner. Nothing else on this page will top that.', 10); }
+    if (t - tv.party < 2.6) confetti(c, W, H, t - tv.party);
+    return { scene: 'off', hue: sign.hue };
+  }
+  if (S.cast === 'starting') {
+    const part = tv.fill ? clamp((t - tv.fill.from) / tv.fill.for, 0, 1) : null;
+    waiting(c, W, H, t, part, part === null ? 'DillyDally' : 'Buffering');
+    return { scene: 'wait' };
+  }
+  const { size, fps } = stream(), time = Math.max(hist[0].t, Math.floor((t - tv.D) * fps) / fps), s = at(time);
+  picture(c, W, H, s, time);
+  const up = t - tv.onAt, osd = t - tv.osdAt;
+  if (up < .5) {   // it comes on as a line that opens
+    const band = H * (1 - (1 - up / .5) ** 3);
+    c.fillStyle = '#000'; c.fillRect(0, 0, W, (H - band) / 2); c.fillRect(0, (H + band) / 2, W, (H - band) / 2 + 1);
+    c.fillStyle = `rgba(255,255,255,${(1 - up / .5) * .85})`; c.fillRect(0, (H - band) / 2, W, band);
+  }
+  if (osd < 4) {   // and says what it is being sent, as TVs do
+    const parts = wired() ? ['HDMI 1', size.replace('x', ' × '), fps + 'p'] : ['DLNA', size.replace('x', ' × '), fps + 'p', S.codec === 'hevc' ? 'HEVC' : 'H.264'];
+    const text = parts.join('   '), a = clamp(4 - osd, 0, 1) * clamp(osd * 4, 0, 1);
+    c.font = `600 ${H * .034}px ${MONO}`; c.textAlign = 'right'; c.textBaseline = 'middle';
+    const wide = c.measureText(text).width;
+    c.fillStyle = `rgba(0,0,0,${.62 * a})`; box(c, W - wide - H * .1, H * .04, wide + H * .06, H * .078, H * .018); c.fill();
+    c.fillStyle = `rgba(255,255,255,${.92 * a})`; c.fillText(text, W - H * .07, H * .081);
+  }
+  if (tv.stalled || tv.waiting) { c.fillStyle = 'rgba(0,0,0,.3)'; c.fillRect(0, 0, W, H); spinner(c, W / 2, H / 2, H * .06, t); }
+  return { scene: s.scene, s, time, full: s.scene === 'desk' && (s.mode === 'window' || s.moved) };
+}
+
+// ---------- The Mac ----------
+
+function record(t) {
+  const s = { t, scene: S.scene, mode: S.mode, chosen: S.chosen, moved: S.moved, cx: live.cx, cy: live.cy,
+              fx: live.film.x, fy: live.film.y, nx: live.note.x, ny: live.note.y, top: live.top, g: S.scene === 'game' ? { ...game } : null };
+  hist.push(s);
+  while (hist.length > 2 && hist[1].t < t - 16) hist.shift();
+  return s;
+}
+
+function at(time) {
+  for (let i = hist.length - 1; i >= 0; i--) if (hist[i].t <= time) return hist[i];
+  return hist[0];
+}
+
+// Keeps the windows and the pointer on the desk. Without a second display that is the Mac's own screen.
+function constrain() {
+  const far = S.mode === 'extended' ? 2 : 1;
+  live.cx = clamp(live.cx, 0, far); live.cy = clamp(live.cy, 0, 1);
+  live.film.x = clamp(live.film.x, -.25, far - FILM + .25); live.film.y = clamp(live.film.y, .066, 1.06 - FILM_H);
+  live.note.x = clamp(live.note.x, -.08, far - NOTE + .08); live.note.y = clamp(live.note.y, .066, 1.1 - NOTE_H);
+}
+
+// Nobody is playing: wander about, so the page is alive on arrival and on phones.
+function wander(t) {
+  const ext = S.mode === 'extended' && !S.moved, f = live.film;
+  f.x += ((ext ? .78 + .62 * Math.sin(t * .4) : .25 + .2 * Math.sin(t * .55)) - f.x) * .04;
+  f.y += (.2 + .12 * Math.cos(t * .7) - f.y) * .04;
+  live.cx += (f.x + .21 + .07 * Math.sin(t * 2.1) - live.cx) * .08;
+  live.cy += (f.y + .028 - live.cy) * .08;
+}
+
+// A point of either screen, on the one desktop they make: the TV's lies to the right of the Mac's.
+function spot(e, canvas) {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) / r.width + (canvas === tvCanvas ? 1 : 0), (e.clientY - r.top) / r.height];
+}
+
+function windowAt(x, y) {
+  for (const id of live.top === 'film' ? ['film', 'note'] : ['note', 'film']) {
+    if (id === 'film' && S.moved) continue;
+    const w = live[id], wide = id === 'film' ? FILM : NOTE, high = id === 'film' ? FILM_H : NOTE_H;
+    if (x >= w.x && x <= w.x + wide && y >= w.y && y <= w.y + high) return id;
+  }
+  return null;
+}
+
+for (const canvas of [macCanvas, tvCanvas]) {
+  const usable = () => S.scene === 'desk' && (canvas === macCanvas || S.mode === 'extended');
+  canvas.addEventListener('pointermove', e => {
+    const [x, y] = spot(e, canvas);
+    if (S.scene === 'game') { game.aim = y; return; }
+    if (!input.drag && !usable()) return;
+    input.last = now(); live.cx = x; live.cy = y;
+    if (input.drag) { const w = live[input.drag.id]; w.x = x - input.drag.dx; w.y = y - input.drag.dy; constrain(); }
+  });
+  canvas.addEventListener('pointerdown', e => {
+    const [x, y] = spot(e, canvas);
+    if (S.scene === 'game') { game.aim = y; return; }
+    if (!usable()) return;
+    input.last = now(); live.cx = x; live.cy = y;
+    const id = windowAt(x, y);
+    if (!id) return;
+    live.top = id; input.drag = { id, dx: x - live[id].x, dy: y - live[id].y };
+    try { canvas.setPointerCapture(e.pointerId); } catch (error) { /* a pointer that is not there cannot be held */ }
+  });
+  for (const type of ['pointerup', 'pointercancel']) canvas.addEventListener(type, () => { input.drag = null; });
+}
+
+// ---------- The TV ----------
+
+const wired = () => S.link === 'cable' && rope.plugged;
+const goal = () => wired() ? 0 : (S.buffer || OFF);
+
+// The TV holds R seconds of movie it has not shown yet. A Wi-Fi hiccup drains
+// that; when it is gone the picture stands still, and falls further behind.
+function stepTV(t, dt) {
+  if (S.cast !== 'on') return;
+  const want = goal();
+  if (wired()) { tv.R = 0; tv.stalled = false; }
+  else if (micro.down) { tv.R = Math.max(0, tv.R - dt); micro.low = Math.min(micro.low, tv.R); if (!tv.R && !tv.stalled) { tv.stalled = true; micro.hit = true; } }
+  else { tv.stalled = false; tv.R = Math.min(want, tv.R + dt * 3); }
+  tv.D = clamp(tv.D + (tv.stalled ? 1 : clamp((want - tv.D) * 5, -6, 1)) * dt, 0, 14);   // waiting gains a second a second; catching up is quicker
+  tv.waiting = !tv.stalled && want - tv.D > .3;
+}
+
+function startCast() {
+  if (S.cast !== 'off') return;
+  const run = ++castRun, wait = clamp(goal(), .6, 2.5);
+  const after = (s, fn) => setTimeout(() => { if (run === castRun) { fn(); sync(); } }, s * 1000);
+  S.cast = 'starting'; S.page = 'main'; S.step = 'Starting…'; tv.fill = null;
+  after(.55, () => { S.step = 'Choose what to show…'; });
+  after(1.15, () => { S.step = 'Buffering…'; tv.fill = { from: now(), for: wait }; });
+  after(1.15 + wait, () => {
+    S.cast = 'on'; tv.onAt = tv.osdAt = now(); tv.D = tv.R = goal(); tv.stalled = false;
+    if (micro.due) microwave();
+  });
+  sync();
+}
+
+function stopCast() {
+  castRun++;
+  micro.due = micro.log = false;
+  if (micro.on) stopMicrowave(false);
+  if (S.scene === 'game') S.scene = 'desk';
+  stopReal();
+  S.cast = 'off'; S.moved = false; tv.offAt = now(); tv.fill = null;
+  sync();
+}
+
+const ensureCast = () => { if (S.cast === 'off') startCast(); };
+
+// ---------- The Wi-Fi, and the microwave that upsets it ----------
+
+const HICCUPS = [[.6, .9], [2.3, 1.2], [4.3, .8], [5.8, 1.7]];   // when the Wi-Fi drops out and for how long: the last is the long one, a little short of the usual buffer
+
+function microwave() {
+  if (micro.on) return stopMicrowave(false);
+  if (S.cast !== 'on') { micro.due = true; ensureCast(); return sync(); }   // nothing to upset yet
+  visits.popped = true; hush('buffer');
+  Object.assign(micro, { on: true, due: false, t0: now(), rode: 0, froze: 0, low: 9, down: false, big: false, hit: false, left: 9 });
+  tally(); sync();
+}
+
+function stopMicrowave(done) {
+  micro.on = micro.down = micro.big = false;
+  if (done) {
+    const verdict = !micro.froze ? `Ding. The buffer covered all four hiccups.${micro.low < .6 ? ` The last one drained it to ${micro.low.toFixed(1)} s.` : ''}`
+      : micro.rode ? `Ding. The buffer covered ${micro.rode} of the four hiccups. A longer buffer would have covered the rest.`
+      : 'Ding. All four hiccups froze the TV. Turn the buffer on and run it again.';
+    if (loud()) tone(1320, 0, .07, 1.2, 'sine');
+    say('buffer', verdict, 9);
+    if (micro.log) print(verdict + '\n', 'o');
+  }
+  micro.log = false;
+  sync();
+}
+
+function tally() { $('#tally').textContent = `Hiccups covered: ${micro.rode} · Freezes: ${micro.froze}`; }
+
+function stepNet(t) {
+  if (!micro.on) return;
+  const age = t - micro.t0, i = HICCUPS.findIndex(([from, length]) => age >= from && age < from + length), down = i >= 0, big = i === HICCUPS.length - 1;
+  if (micro.down && !down) {   // a hiccup has passed
+    if (micro.hit) micro.froze++; else micro.rode++;
+    if (micro.log) print(`A ${HICCUPS[micro.i][1]} s hiccup. ${micro.hit ? 'The TV froze.' : 'The buffer covered it.'}\n`, 'o');
+    micro.hit = false; tally();
+  }
+  if (down) micro.i = i;
+  if (down !== micro.down || big !== micro.big) { micro.down = down; micro.big = big; lines(); }
+  const left = Math.max(0, Math.ceil(9 - age));
+  if (left !== micro.left) { micro.left = left; $('#mwTime').textContent = '0:0' + left; }
+  if (loud() && t > micro.pop) { tone(700 + Math.random() * 900, 0, .025, .035, 'square'); micro.pop = t + .04 + Math.random() * .22; }   // pop
+  if (age >= 9) stopMicrowave(true);
+}
+
+// ---------- The air between them: packets, or a cable ----------
+
+function sendPackets(c, t, dt) {
+  const m = geo.mac, v = geo.tv;
+  const sending = !wired() && !calm && (S.cast === 'on' || (S.cast === 'starting' && tv.fill));
+  owed = sending ? owed + dt * 60 : 0;
+  for (; owed >= 1; owed--) packets.push({ born: t, life: .5 + Math.random() * .3, lane: Math.random() * 2 - 1, size: geo.w * (.0024 + Math.random() * .0034), dies: micro.down ? .2 + Math.random() * .5 : 2 });
+  const x0 = m.x + m.w / 2, y0 = m.y - geo.w * .012, y1 = v.y + v.h + geo.w * .012;
+  for (let i = packets.length - 1; i >= 0; i--) {
+    const p = packets[i], k = (t - p.born) / p.life;
+    if (micro.down && p.dies > 1 && k < .7) p.dies = Math.max(k, .2) + Math.random() * .25;   // the hiccup takes the ones in flight
+    if (k >= 1 || k > p.dies + .35) { packets.splice(i, 1); continue; }
+    const lost = k > p.dies, far = lost ? k - p.dies : 0, on = Math.min(k, p.dies);
+    const x = x0 + p.lane * geo.w * (.03 * Math.sin(on * Math.PI) + far * .12), y = y0 + (y1 - y0) * on + far * far * geo.w * .5;
+    c.fillStyle = lost ? `rgba(${paint.lost},${1 - far / .35})` : `rgba(${paint.ok},${Math.sin(k * Math.PI) ** .6})`;
+    c.fillRect(x - p.size / 2, y - p.size / 2, p.size, p.size);
+  }
+}
+
+function waves(c, t) {   // what the microwave gives off
+  if (!micro.on) return;
+  const y = (geo.mac.y + geo.tv.y + geo.tv.h) / 2, u = geo.w / 100;
+  c.lineWidth = u * .25;
+  for (let i = 0; i < 4; i++) {
+    const k = (t * .9 + i / 4) % 1;
+    c.strokeStyle = `rgba(${paint.wave},${(1 - k) * (micro.down ? .5 : .16) * paint.gain})`;
+    c.beginPath(); c.arc(-u * 9, y, u * (8 + k * 55), -.5, .5); c.stroke();
+  }
+}
+
+function callout(c) {   // the panel hangs from the mark in the Mac's menu bar
+  const m = geo.mac, p = geo.panel, u = geo.w / 100;
+  if (!p || S.scene !== 'desk') return;
+  const x = m.x + m.w * (GLYPH + .02), y = m.y + m.h * .034, g = c.createLinearGradient(x, 0, p.x, 0);
+  g.addColorStop(0, paint.beam[0]); g.addColorStop(1, paint.beam[1]);
+  c.fillStyle = g; c.beginPath(); c.moveTo(x, y); c.lineTo(p.x, p.y + u * 1.4); c.lineTo(p.x, p.y + Math.min(p.h - u * 1.4, u * 9)); c.closePath(); c.fill();
+}
+
+// The cable is a chain of points, each kept one link from the next, falling
+// under its own weight. One end is in the TV; the other can be dragged.
+const rope = {
+  n: 22, pts: [], seg: 0, len: 0, show: 0, owed: 0, into: 1,
+  plugged: false, held: false, seek: false, dragged: 0, was: false,
+  a: { x: 0, y: 0 }, port: { x: 0, y: 0 }, hand: { x: 0, y: 0 }, grip: { x: 0, y: 0 }, from: { x: 0, y: 0 },
+
+  wanted: () => S.chapter === 'cable' || S.link === 'cable',
+  end() { return this.pts[this.n]; },
+
+  place() {
+    const u = geo.w / 100, m = geo.mac, v = geo.tv, left = !narrow.matches;
+    this.into = left ? 1 : -1;   // the way the plug faces when it is in the Mac
+    this.port = { x: left ? m.x - u * .9 : m.x + m.w + u * .9, y: m.y + m.h * .62 };
+    this.a = { x: left ? u * 4.6 : m.x + m.w + u * 5.4, y: v.y + v.h + u * .9 };
+    this.len = Math.hypot(this.port.x - this.a.x, this.port.y - this.a.y) * 1.22 + u * 3;
+    this.seg = this.len / this.n;
+    this.coil();
+  },
+
+  // Let go of from over the Mac, to swing down beside it; or already strung to the Mac.
+  coil() {
+    const lean = this.into * .55, tight = { x: (this.port.x - this.a.x) / this.n, y: (this.port.y - this.a.y) / this.n };
+    this.pts = Array.from({ length: this.n + 1 }, (_, i) => {
+      const down = Math.min(i, 1), out = i - down;
+      const x = this.a.x + (this.plugged ? tight.x * i : out * this.seg * Math.sin(lean));
+      const y = this.a.y + (this.plugged ? tight.y * i : (down + out * Math.cos(lean)) * this.seg);
+      return { x, y, px: x, py: y };
+    });
+  },
+
+  plugIn() {
+    if (this.plugged || this.seek) return;
+    if (!this.pts.length) { this.plugged = true; return; }
+    if (!this.show) this.coil();
+    const e = this.end();
+    this.held = false; this.seek = true; this.hand = { x: e.x, y: e.y };
+  },
+
+  pullOut() {
+    this.seek = false;
+    if (!this.plugged) return;
+    this.plugged = false;
+    const e = this.end(); e.px = e.x + this.into * this.seg * .5;   // a tug away from the Mac
+  },
+
+  reach(x, y) {   // as far as the cable lets the hand go
+    const dx = x - this.a.x, dy = y - this.a.y - this.seg, d = Math.hypot(dx, dy), most = this.len - this.seg * 1.5;
+    return d > most ? { x: this.a.x + dx * most / d, y: this.a.y + this.seg + dy * most / d } : { x, y };
+  },
+
+  tick(dt) {
+    const want = this.wanted();
+    if (want && !this.show && !this.plugged && !this.seek) this.coil();
+    this.show = clamp(this.show + (want ? dt : -dt) * 5, 0, 1);
+    if (!this.show || !this.pts.length) return;
+    this.owed = Math.min(this.owed + dt, .05);
+    for (; this.owed >= 1 / 120; this.owed -= 1 / 120) this.step();
+  },
+
+  step() {
+    const P = this.pts, n = this.n, e = P[n], fall = geo.w * 2.6 / 14400, near = (geo.w * .025) ** 2;
+    if (this.seek) {
+      this.hand.x += (this.port.x - this.hand.x) * .09; this.hand.y += (this.port.y - this.hand.y) * .09;
+      if (Math.hypot(this.port.x - this.hand.x, this.port.y - this.hand.y) < 1.2) { this.seek = false; this.plugged = true; visits.plugged = true; tv.osdAt = now(); sync(); }
+    }
+    const fixed = this.plugged || this.held || this.seek;
+    for (let i = 2; i <= n; i++) {
+      const p = P[i];
+      if (i === n && fixed) continue;
+      const vx = (p.x - p.px) * .992, vy = (p.y - p.py) * .992;
+      p.px = p.x; p.py = p.y; p.x += vx; p.y += vy + fall;
+      if (!this.held && (p.x - mouse.x) ** 2 + (p.y - mouse.y) ** 2 < near) { p.x += mouse.vx * .08; p.y += mouse.vy * .08; }   // a passing pointer knocks it
+    }
+    for (let k = 0; k < 14; k++) {
+      P[0].x = P[1].x = this.a.x; P[0].y = this.a.y; P[1].y = this.a.y + this.seg;   // it leaves the TV straight down
+      if (this.plugged) { e.x = this.port.x; e.y = this.port.y; P[n - 1].x = e.x - this.into * this.seg; P[n - 1].y = e.y; }   // and the Mac straight out
+      else if (fixed) { e.x = this.hand.x; e.y = this.hand.y; }
+      for (let i = 1; i < n; i++) {
+        const p = P[i], q = P[i + 1], dx = q.x - p.x, dy = q.y - p.y, d = Math.hypot(dx, dy) || 1e-6, pull = (d - this.seg) / d;
+        const pf = i === 1 ? 0 : 1, qf = (i + 1 === n && fixed) || (i + 1 === n - 1 && this.plugged) ? 0 : 1, sum = pf + qf;
+        if (!sum) continue;
+        p.x += dx * pull * pf / sum; p.y += dy * pull * pf / sum; q.x -= dx * pull * qf / sum; q.y -= dy * pull * qf / sum;
+      }
+    }
+  },
+
+  draw(c, t) {
+    if (!this.show || !this.pts.length) return;
+    const P = this.pts, n = this.n, e = P[n], u = geo.w / 100, d = geo.dpr, path = new Path2D();
+    path.moveTo(P[0].x, P[0].y);
+    for (let i = 1; i < n; i++) path.quadraticCurveTo(P[i].x, P[i].y, (P[i].x + P[i + 1].x) / 2, (P[i].y + P[i + 1].y) / 2);
+    path.lineTo(e.x, e.y);
+    c.save(); c.globalAlpha = this.show; c.lineCap = c.lineJoin = 'round';
+    c.shadowColor = paint.shade; c.shadowBlur = u * 1.2 * d; c.shadowOffsetY = u * .6 * d;
+    c.strokeStyle = '#262730'; c.lineWidth = u * .8; c.stroke(path);
+    c.shadowColor = 'transparent'; c.strokeStyle = 'rgba(255,255,255,.17)'; c.lineWidth = u * .2; c.stroke(path);
+    if (this.plugged && S.cast === 'on' && !calm) {   // the picture, going up the wire
+      const k = (1 - (t * 1.5) % 1) * n, i = Math.min(n - 1, Math.floor(k)), f = k - i;
+      c.fillStyle = '#3fe0c5'; c.shadowColor = '#3fe0c5'; c.shadowBlur = u * 1.5 * d; c.shadowOffsetY = 0;
+      c.beginPath(); c.arc(P[i].x + (P[i + 1].x - P[i].x) * f, P[i].y + (P[i + 1].y - P[i].y) * f, u * .34, 0, 7); c.fill();
+      c.shadowColor = 'transparent';
+    }
+    this.plug(c, P[0], -Math.PI / 2, u, true);
+    this.plug(c, e, this.plugged ? (this.into > 0 ? 0 : Math.PI) : Math.atan2(e.y - P[n - 1].y, e.x - P[n - 1].x), u, this.plugged);
+    c.restore();
+  },
+
+  plug(c, p, angle, u, seated) {
+    c.save(); c.translate(p.x, p.y); c.rotate(angle);
+    c.fillStyle = '#343642'; box(c, -u * 2.5, -u * .78, u * 2.5, u * 1.56, u * .3); c.fill();
+    c.fillStyle = 'rgba(255,255,255,.13)'; c.fillRect(-u * 2.2, -u * .78, u * 1.7, u * .26);
+    if (!seated) { c.fillStyle = '#bcc0cf'; c.beginPath(); c.moveTo(0, -u * .54); c.lineTo(u * 1.05, -u * .54); c.lineTo(u * 1.05, u * .3); c.lineTo(u * .8, u * .54); c.lineTo(0, u * .54); c.closePath(); c.fill(); }
+    c.restore();
+  },
+};
+
+// The canvas for all this reaches a tenth of the room's width past each side, for the cable to swing in.
+function drawAir(t, dt) {
+  const d = geo.dpr, pad = geo.w * .1;
+  air.setTransform(d, 0, 0, d, pad * d, 0); air.clearRect(-pad, 0, geo.w + 2 * pad, geo.h);
+  if (!geo.mac) return;
+  callout(air); waves(air, t); sendPackets(air, t, dt); rope.draw(air, t);
+  if (rope.show && rope.pts.length) plugBtn.style.transform = `translate(${rope.end().x}px, ${rope.end().y}px)`;
+}
+
+function setLink(link) {
+  if (link === S.link) return;
+  S.link = link; hush('games');
+  if (link === 'cable') rope.plugIn(); else rope.pullOut();
+  sync();
+}
+
+function handAt(e) {
+  const s = stage.getBoundingClientRect();
+  rope.hand = rope.reach(e.clientX - s.left + rope.grip.x, e.clientY - s.top + rope.grip.y);
+}
+plugBtn.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  try { plugBtn.setPointerCapture(e.pointerId); } catch (error) { /* as above */ }
+  const s = stage.getBoundingClientRect(), end = rope.end();
+  visits.touched = true;
+  Object.assign(rope, { was: rope.plugged, dragged: 0, seek: false, plugged: false, held: true, from: { x: e.clientX, y: e.clientY },
+                        grip: { x: end.x - (e.clientX - s.left), y: end.y - (e.clientY - s.top) } });
+  handAt(e);
+  S.link = 'dilly'; sync();
+});
+plugBtn.addEventListener('pointermove', e => {
+  if (!rope.held) return;
+  rope.dragged = Math.max(rope.dragged, Math.hypot(e.clientX - rope.from.x, e.clientY - rope.from.y));
+  handAt(e);
+});
+for (const type of ['pointerup', 'pointercancel']) plugBtn.addEventListener(type, () => {
+  if (!rope.held) return;
+  rope.held = false;
+  const e = rope.end(), near = Math.hypot(e.x - rope.port.x, e.y - rope.port.y) < geo.w * .07;
+  if (rope.dragged < 5 ? !rope.was : near) { S.link = 'cable'; rope.plugIn(); }   // a click without a drag plugs or unplugs it
+  else if (rope.was && rope.dragged < 5) e.px = e.x + rope.into * rope.seg * .5;
+  sync();
+});
+plugBtn.addEventListener('click', e => { if (!e.detail) { visits.touched = true; setLink(S.link === 'cable' ? 'dilly' : 'cable'); } });   // from the keyboard
+
+// ---------- Sound ----------
+//
+// The movie has a tune, a note every half second. Each screen plays the note of
+// the moment it is showing, so with both on you hear everything twice: the
+// reason the README says to mute the Mac.
+
+const TUNE = [0, 4, 7, 4, 9, 7, 4, 2, 0, 4, 7, 12, 9, 7, 4, 7];
+const loud = () => snd.mac || snd.tv;
+
+function audio() {
+  const Context = window.AudioContext || window.webkitAudioContext;
+  if (!snd.ctx && Context) snd.ctx = new Context();
+  if (snd.ctx && snd.ctx.state === 'suspended') snd.ctx.resume();
+}
+
+function tone(freq, pan, volume, length, type = 'triangle') {
+  const a = snd.ctx;
+  if (!a || a.state !== 'running') return;
+  const osc = a.createOscillator(), gain = a.createGain(), t = a.currentTime;
+  osc.type = type; osc.frequency.value = freq;
+  gain.gain.setValueAtTime(.0001, t); gain.gain.exponentialRampToValueAtTime(volume, t + .012); gain.gain.exponentialRampToValueAtTime(.0001, t + length);
+  osc.connect(gain);
+  if (a.createStereoPanner) { const p = a.createStereoPanner(); p.pan.value = pan; gain.connect(p); p.connect(a.destination); } else gain.connect(a.destination);
+  osc.start(t); osc.stop(t + length + .03);
+}
+
+function play(who, s, t) {
+  const pan = who === 'mac' ? -.75 : .75, volume = who === 'mac' ? .05 : .08;
+  if (!snd[who] || !s) { snd.n[who] = snd.g[who] = null; return; }
+  if (s.scene === 'desk') {
+    const n = Math.floor(t * 2);
+    if (snd.n[who] !== null && n !== snd.n[who]) tone(220 * 2 ** (TUNE[(n % 16 + 16) % 16] / 12), pan, volume, .24);
+    snd.n[who] = n; snd.g[who] = null;
+  } else if (s.scene === 'game') {
+    const g = s.g, was = snd.g[who];
+    if (was && g.you + g.cpu !== was.you + was.cpu) tone(110, pan, volume, .4, 'sawtooth');
+    else if (was && Math.sign(g.vx) !== Math.sign(was.vx)) tone(480, pan, volume, .08, 'square');
+    else if (was && Math.sign(g.vy) !== Math.sign(was.vy)) tone(240, pan, volume, .08, 'square');
+    snd.g[who] = g; snd.n[who] = null;
+  }
+}
+
+function twice() { if (snd.mac && snd.tv && S.cast === 'on' && !wired()) say(S.chapter, "You're hearing everything twice, which is why you mute the Mac while casting.", 8); }
+
+const SPEAKER = ['<svg viewBox="0 0 16 16"><path d="M2.4 6.1v3.8h2.5l3.3 2.9V3.2L4.9 6.1z"/><path d="m11 6.2 3.4 3.6m0-3.6L11 9.8"/></svg>',
+                 '<svg viewBox="0 0 16 16"><path d="M2.4 6.1v3.8h2.5l3.3 2.9V3.2L4.9 6.1z"/><path d="M10.7 5.7a3.3 3.3 0 0 1 0 4.6M12.5 3.9a5.9 5.9 0 0 1 0 8.2"/></svg>'];
+for (const [who, buttons] of [['mac', '#spkMac'], ['tv', '#spkTv']]) {   // under each screen
+  for (const b of $$(buttons)) b.addEventListener('click', () => { audio(); snd[who] = !snd[who]; twice(); sync(); });
+}
+$('#sound').addEventListener('click', () => { audio(); snd.mac = snd.tv = !loud(); twice(); sync(); });
+
+// ---------- The panel ----------
+//
+// The text and the layout are menubar.swift's. The settings act at once here;
+// in the app they take a restart of the cast.
+
+const ICON = {
+  tv: '<svg viewBox="0 0 16 16"><rect x="1.6" y="3" width="12.8" height="8.6" rx="1.7"/><path d="M5.4 13.8h5.2"/></svg>',
+  mirror: '<svg viewBox="0 0 16 16"><rect x="4.4" y="5.6" width="10" height="7.6" rx="1.6"/><path d="M2 9.6V4.4a1.6 1.6 0 0 1 1.6-1.6h7a1.6 1.6 0 0 1 1.6 1.2"/></svg>',
+  window: '<svg viewBox="0 0 16 16"><rect x="2.2" y="2.8" width="11.6" height="10.4" rx="1.8"/><path d="M2.2 6h11.6M4.6 4.4h.01M6.4 4.4h.01"/></svg>',
+  extended: '<svg viewBox="0 0 16 16"><rect x="1.6" y="3.2" width="12.8" height="9.6" rx="1.8"/><path d="M8 3.2v9.6"/></svg>',
+  info: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.3"/><path class="g" d="M8 7.4v3.5M8 5.1h.01"/></svg>',
+  search: '<svg viewBox="0 0 16 16"><path d="M13 8.2a5 5 0 1 1-1.5-3.6"/><path d="M13.3 2.5v2.9h-2.9"/></svg>',
+  right: '<svg viewBox="0 0 16 16"><path d="M6 3.6 10.4 8 6 12.4"/></svg>',
+  left: '<svg viewBox="0 0 16 16"><path d="M10 3.6 5.6 8 10 12.4"/></svg>',
+};
+const MODES = { mirror: 'Entire Screen', window: 'Window or App', extended: 'Extended Display' };   // as Screen Mirroring names them
+
+function renderPanel() {
+  const info = `<button class="p-i${S.info ? ' on' : ''}" data-act="info" aria-label="What is this?" aria-pressed="${S.info}">${ICON.info}</button>`;
+  const note = text => S.info ? `<p class="p-note">${text}</p>` : '';
+  const action = (act, title, extra = '') => `<button class="p-row p-hit" data-act="${act}"><span>${title}</span>${extra}</button>`;
+  const device = (trail = '') => `<span class="p-ico">${ICON.tv}</span><span>${TV_NAME}</span>${trail}`;
+  const choice = (title, key, choices, text) => `<span>${title}</span><span class="p-seg">${choices.map(([name, value]) =>
+    `<button data-set="${key}:${value}" aria-pressed="${S[key] === value}">${name}</button>`).join('')}</span>${note(text)}`;
+  let html;
+
+  if (S.page === 'settings') {
+    html = `<div class="p-head"><button class="p-back" data-act="main">${ICON.left}<span class="p-title">Settings</span></button>${info}</div><hr>
+      <span class="p-label">Picture</span><div class="p-grid">
+      ${choice('Resolution', 'size', [['Auto', 'auto'], ['1080p', '1920x1080'], ['4K', '3840x2160']], "Auto is the TV's own resolution when its model is known, otherwise 1080p.")}
+      ${choice('Frame rate', 'fps', [['30', 30], ['60', 60]], '60 is smoother. 30 is easier on this Mac and on the Wi-Fi.')}
+      ${choice('Codec', 'codec', [['H.264', 'h264'], ['HEVC', 'hevc']], 'HEVC looks better at the same size. H.264 is for older TVs, and manages 4K only at 30 frames a second.')}
+      </div><hr><span class="p-label">Playback</span><div class="p-grid">
+      ${choice('Buffer', 'buffer', [['Off', 0], ['2 s', 2], ['5 s', 5], ['10 s', 10]], 'How far behind this Mac the TV plays. A longer buffer rides out Wi-Fi hiccups.')}
+      <span>Sound</span><span><button class="p-sw" role="switch" aria-checked="${S.sound}" aria-label="Sound" data-act="sound"></button></span>
+      ${note("Off sends the picture alone. This Mac's own speakers are not changed either way.")}
+      </div><hr>${action('reset', 'Reset to Defaults')}${action('quit', 'Quit DillyDally')}`;
+  } else if (S.cast === 'off') {
+    html = `<div class="p-head"><span class="p-title">DillyDally</span>${info}</div>
+      ${note('Makes the TV an extra display. Screen Mirroring in the menu bar then chooses what it shows.')}<hr>
+      <div class="p-head"><span class="p-label">Cast to</span><button class="p-i" data-act="search" aria-label="Look for TVs again"${S.searching ? ' disabled' : ''}>${ICON.search}</button></div>
+      ${S.searching ? '<div class="p-dev"><i class="p-spin"></i><span class="p-dim">Looking for TVs…</span></div>'
+                    : `<button class="p-dev p-hit invite" data-act="cast">${device('<span class="p-dim">4K</span>')}</button>`}
+      <hr>${action('settings', 'DillyDally Settings…')}`;
+  } else if (S.cast === 'starting') {
+    const asking = S.step.startsWith('Choose what to show');
+    html = `<div class="p-head"><span class="p-title">DillyDally</span></div><hr><span class="p-label">Casting to</span>
+      <div class="p-dev active">${device('<i class="p-spin"></i>')}</div>
+      <div class="p-head"><span>${S.step}</span>${asking ? info : ''}</div>
+      ${asking ? note('macOS is asking what to show on the TV: the whole screen, one window or app, or a display of its own. If you see no question, open Screen Mirroring in the menu bar.') : ''}
+      <hr>${action('stop', 'Cancel')}`;
+  } else {
+    html = `<div class="p-head"><span class="p-title">DillyDally</span><span class="p-health" data-bind="health"><i></i><span>Smooth</span></span></div>
+      <p class="p-note p-num" data-bind="format"></p>
+      <p class="p-note" data-bind="trouble" hidden>The TV is not keeping up with the stream. Is the Wi-Fi busy?</p>
+      <hr><span class="p-label">Casting to</span><div class="p-dev active">${device()}</div>
+      <hr><span class="p-label">Screen Mirroring</span>
+      <div class="p-dev"><span class="p-ico">${ICON[S.mode]}</span><span>${MODES[S.mode]}</span></div><hr>
+      ${S.mode !== 'extended' ? '' : S.moved ? action('back', 'Bring That Movie Back to This Mac') : action('move', 'Move an App to the TV', `<span class="p-dim">${ICON.right}</span>`)}
+      ${S.mode === 'window' ? action('choose', 'Choose Another Window…') : ''}
+      ${action('display', 'Display Settings…')}${action('settings', 'DillyDally Settings…')}${action('stop', 'Stop Casting')}`;
+  }
+
+  // On a small screen the panel sits in the story, above most of it: where the browser will not hold the
+  // page still as the panel changes height off screen, that is done here.
+  const docked = panel.parentNode !== stage, held = docked && !anchors, was = held ? panel.getBoundingClientRect().bottom : 0;
+  const focus = panel.contains(document.activeElement) ? document.activeElement.dataset : null;
+  panel.innerHTML = html;
+  if (focus) { const again = $(focus.act ? `[data-act="${focus.act}"]` : `[data-set="${focus.set}"]`, panel); if (again) again.focus({ preventScroll: true }); }
+  bind();
+  if (held && was < $('.pin').getBoundingClientRect().bottom) scrollBy({ top: panel.getBoundingClientRect().bottom - was, behavior: 'instant' });
+  hang();
+}
+
+// Where the panel hangs in the room. One too tall for it is moved up to fit.
+function hang() {
+  panel.style.translate = '';
+  if (panel.parentNode !== stage) { geo.panel = null; stage.classList.remove('tall'); return; }
+  const over = Math.max(0, panel.offsetTop + panel.offsetHeight - stage.clientHeight);
+  if (over) panel.style.translate = `0 ${-over}px`;
+  stage.classList.toggle('tall', over > 0);
+  geo.panel = { x: panel.offsetLeft, y: panel.offsetTop - over, w: panel.offsetWidth, h: panel.offsetHeight };
+}
+
+// The parts of the panel that change while it is open, without rebuilding it under the pointer.
+function bind() {
+  const health = $('[data-bind=health]', panel);
+  if (!health) return;
+  const idle = wired(), late = !idle && (tv.stalled || tv.D > goal() + .6), { size, fps } = stream();
+  const mbit = { h264: { '1920x1080': 19, '3840x2160': 42 }, hevc: { '1920x1080': 11, '3840x2160': 28 } }[S.codec][size];
+  const format = idle ? 'The cable has the TV. Unplug it to cast again.'   // the one line here that is not the app's
+    : [size === '3840x2160' ? '4K' : '1080p', fps, S.codec === 'hevc' ? 'HEVC' : 'H.264', S.buffer ? `${S.buffer} s buffer` : 'no buffer',
+       `${micro.down ? Math.round(mbit * .07) : mbit} Mbit/s`].join(' · ');
+  const text = idle ? 'Sulking' : late ? 'Falling behind' : 'Smooth';
+  if (health.lastChild.textContent !== text) {
+    health.lastChild.textContent = text; health.classList.toggle('slow', late); health.classList.toggle('idle', idle);
+    $('[data-bind=trouble]', panel).hidden = !late;
+    hang();
+  }
+  const line = $('[data-bind=format]', panel);
+  if (line.textContent !== format) line.textContent = format;
+}
+
+const acts = {
+  cast: startCast,
+  stop: stopCast,
+  search() { S.searching = true; renderPanel(); setTimeout(() => { S.searching = false; renderPanel(); }, 1100); },
+  info() { S.info = !S.info; renderPanel(); },
+  settings() { S.page = 'settings'; renderPanel(); },
+  main() { S.page = 'main'; renderPanel(); },
+  sound() { S.sound = !S.sound; sync(); },
+  reset() { Object.assign(S, DEFAULTS); tv.osdAt = now(); sync(); },
+  quit() { S.page = 'main'; stopCast(); announce("A web page can't quit, so it stopped the cast instead."); },
+  move() { S.moved = true; sync(); },
+  back() { S.moved = false; sync(); },
+  choose() { S.chosen = S.chosen === 'film' ? 'note' : 'film'; sync(); },
+  display() { $('#display').scrollIntoView({ block: 'center' }); },
+};
+panel.addEventListener('click', e => {
+  const button = e.target.closest('button');
+  if (!button || button.disabled) return;
+  if (button.dataset.set) {
+    const [key, value] = button.dataset.set.split(':');
+    S[key] = isNaN(value) ? value : +value; tv.osdAt = now(); sync();
+  } else acts[button.dataset.act]();
+});
+
+// ---------- The story ----------
+
+// A stage direction under each scene: what the state calls for, unless something just happened.
+function direction(ch) {
+  const held = { 2: 'Two', 5: 'Five', 10: 'Ten' }[S.buffer];
+  if (ch !== 'hero' && S.cast === 'off') return 'The TV is off. Pick it in the panel to cast again.';
+  switch (ch) {
+    case 'hero': return S.cast === 'off' ? `The panel is a copy of the app's. ${fine ? 'Click' : 'Tap'} the TV in it to start casting.`
+      : S.cast === 'starting' ? 'The app finds the TV, asks what to show and fills the buffer. That takes a few seconds here and in real life.' : "The TV is playing the Mac's movie. Scroll on to try the rest.";
+    case 'display': return { mirror: 'The TV shows whatever the Mac shows. Drag a window on the Mac to check.',
+      window: S.chosen === 'film' ? 'Only the movie goes to the TV. The shopping list stays between you and the Mac.'
+        : "The whole TV is now your shopping list. A window that isn't 16:9 gets black bars.",
+      extended: "The TV is a desktop of its own now. Drag the movie off the Mac's right edge and onto it." }[S.mode];
+    case 'cable': return wired() ? "Plugged in, the TV keeps pace with the Mac. The cable's a little smug about it."
+      : visits.plugged ? 'Back on Wi-Fi the TV is behind again, and the Mac can sit anywhere.' : 'This page has a cable, and its plug is dangling beside the Mac. Drag it in, or use the switch.';
+    case 'buffer': return micro.due ? 'The microwave starts once the TV is playing.' : micro.on
+      ? micro.big ? (S.buffer >= 5 ? `This hiccup lasts 1.7 seconds, well inside a ${held.toLowerCase()}-second buffer.` : S.buffer ? 'This hiccup lasts 1.7 seconds. The buffer is down to its last third of a second.' : 'This hiccup lasts 1.7 seconds, and the TV is frozen for all of it.')
+                  : (S.buffer >= 5 ? `The line under the TV hardly dips. The price is a TV ${held.toLowerCase()} seconds behind.` : S.buffer ? 'The line under the TV is the buffer. Each hiccup drains it, and it refills while the movie plays.' : 'With the buffer off, every hiccup freezes the TV. The panel says so too.')
+      : S.buffer >= 5 ? `With ${held.toLowerCase()} seconds of buffer you could reheat dinner too.` : S.buffer ? 'Press the microwave to give the Wi-Fi four hiccups.' : 'The buffer is off. Press the microwave to see what it was for.';
+    case 'games': return S.scene !== 'game' ? `Your paddle is the left one, and ${fine ? 'the pointer' : 'a finger on the TV'} moves it.`
+      : wired() ? "With the cable in there's no delay, so the misses are yours." : `Watch the TV. Your paddle moves there ${held ? held.toLowerCase() + ' seconds' : 'a moment'} after you do.`;
+    case 'real': return !canShare ? "This browser can't share its screen, so this scene needs a desktop one."
+      : !real.on ? 'Pick this tab when the browser asks, and the page will show itself.'
+      : real.kind === 'browser' ? 'A tab inside a tab inside a tab, each one later than the last.'
+      : real.kind === 'window' ? "That's one window, as in Window or App mode. Move it and the TV follows." : "That's your screen as it was a moment ago. Move the pointer and watch it arrive.";
+  }
+}
+
+function lines() {
+  const t = now();
+  for (const el of $$('.dir')) {
+    const ch = el.id.slice(2), text = said[ch] && said[ch].until > t ? said[ch].text : direction(ch);
+    if (el.textContent === text) continue;
+    el.textContent = text;
+    el.classList.remove('new'); void el.offsetWidth; el.classList.add('new');
+  }
+}
+
+function say(ch, text, hold = 6) {
+  said[ch] = { text, until: now() + hold };
+  lines();
+}
+
+// What was said gives way at once when the visitor does the next thing.
+function hush(...scenes) { for (const ch of scenes) delete said[ch]; }
+
+// Brings the page's controls into line with the state.
+function sync() {
+  const press = (id, value) => { for (const b of $(id).children) b.setAttribute('aria-pressed', b.dataset.v === String(value)); };
+  press('#mode', S.mode); press('#link', S.link); press('#bufseg', S.buffer);
+  const score = S.link === 'cable' ? ['None', 'The cable, and an adapter if your Mac has no HDMI port', 'Within 6 feet of the TV']
+    : [S.buffer ? `About ${S.buffer} s` : 'A fraction of a second, with no buffer', 'The Wi-Fi you already have', 'Anywhere the Wi-Fi reaches'];
+  score.forEach((text, i) => { $('#s' + (i + 1)).textContent = text; });
+  $('#start').textContent = { off: 'Start the demo', starting: 'Starting…', on: 'Stop the demo' }[S.cast];
+  $('#play').textContent = S.scene === 'game' ? 'Stop playing' : 'Play Pong on the TV';
+  $('#cheat').textContent = S.link === 'cable' ? 'Unplug the cable' : 'Plug in the cable';
+  $('#share').textContent = real.on ? 'Stop sharing' : 'Cast my real screen';
+  $('#micro').setAttribute('aria-pressed', micro.on);
+  $('#mwLabel').textContent = micro.on ? 'Popping…' : micro.due ? 'Waiting for the TV…' : 'Make popcorn';
+  if (!micro.on) $('#mwTime').textContent = '0:09';
+  $('#sound').textContent = loud() ? 'Sound on' : 'Sound off';
+  $('#sound').setAttribute('aria-pressed', loud());
+  tvFig.classList.toggle('on', S.cast === 'on');
+  tvFig.classList.toggle('grab', S.scene === 'game' || (S.scene === 'desk' && S.mode === 'extended'));
+  for (const who of ['mac', 'tv']) { const b = $(who === 'mac' ? '#spkMac' : '#spkTv'); b.setAttribute('aria-pressed', snd[who]); b.innerHTML = SPEAKER[+snd[who]]; }
+  plugBtn.classList.toggle('show', rope.wanted());
+  plugBtn.classList.toggle('tease', S.chapter === 'cable' && S.link === 'dilly' && !visits.touched);
+  renderPanel(); lines();
+}
+
+// Each scene sets the room up for its one point, and tidies up after the others.
+function enter(ch) {
+  if (ch !== 'hero') ensureCast();
+  if (ch !== 'games' && S.scene === 'game') S.scene = 'desk';
+  if (ch !== 'real') stopReal();
+  if (ch !== 'cable' && S.link === 'cable') { S.link = 'dilly'; rope.pullOut(); }
+  if (ch !== 'buffer') { micro.due = micro.log = false; if (micro.on) stopMicrowave(false); }
+  clearTimeout(cues.plug); clearTimeout(cues.pop);
+  // For those who only scroll, each of these happens once by itself.
+  if (ch === 'cable' && !visits.touched && !visits.plugged) cues.plug = setTimeout(() => { if (S.chapter === 'cable' && !visits.touched) setLink('cable'); }, 2600);
+  if (ch === 'buffer' && !visits.popped) cues.pop = setTimeout(() => { if (S.chapter === 'buffer' && !visits.popped && !micro.on) microwave(); }, 1600);
+  sync();
+}
+
+const chapters = $$('.ch');
+function chapterCheck() {
+  const line = innerHeight * (narrow.matches ? .55 : .5);   // on a small screen the room takes the top: wait for the last scene's controls to slide under it
+  let current = chapters[0];
+  for (const el of chapters) if (el.getBoundingClientRect().top <= line) current = el;
+  if (current.dataset.ch === S.chapter) return;
+  S.chapter = current.dataset.ch;
+  for (const el of chapters) el.classList.toggle('on', el === current);
+  enter(S.chapter);
+}
+let checking = false;
+addEventListener('scroll', () => {
+  if (checking) return;
+  checking = true;
+  requestAnimationFrame(() => { checking = false; chapterCheck(); });
+}, { passive: true });
+
+function choose(id, apply) {
+  $(id).addEventListener('click', e => { const b = e.target.closest('button'); if (b) apply(b.dataset.v); });
+}
+choose('#mode', v => {
+  if (S.scene !== 'desk') { stopReal(); S.scene = 'desk'; }
+  S.mode = v; if (v !== 'extended') S.moved = false;
+  ensureCast(); constrain(); sync();
+});
+choose('#link', v => { visits.touched = true; ensureCast(); setLink(v); });
+choose('#bufseg', v => { S.buffer = +v; hush('buffer'); sync(); });
+$('#start').addEventListener('click', () => S.cast === 'off' ? startCast() : stopCast());
+$('#micro').addEventListener('click', microwave);
+$('#cheat').addEventListener('click', () => { visits.touched = true; setLink(S.link === 'cable' ? 'dilly' : 'cable'); });
+
+// ---------- Scene 5: a game, which the two seconds ruin ----------
+
+const TAUNTS = ['The TV showed you where the ball used to be.', "Looking at the Mac is cheating. It's also what a cable does.", 'Plug in the cable for a fair game.'];
+
+function serve(to, at) {
+  game.bx = .5; game.by = .25 + Math.random() * .5; game.vx = to * .5; game.hold = at;
+  game.vy = (Math.random() < .5 ? -1 : 1) * (.2 + Math.random() * .22);   // never flat: a ball that keeps its height can be met two seconds late
+}
+
+function stepGame(t, dt) {
+  const g = game, half = PADDLE / 2, was = g.bx;
+  g.py = clamp(g.aim, half, 1 - half);
+  g.qy = clamp(g.qy + clamp((g.vx > 0 ? g.by : .5) - g.qy, -dt * .56, dt * .56), half, 1 - half);   // the other side is good, not perfect
+  if (t < g.hold) return;
+  g.bx += g.vx * dt; g.by += g.vy * dt;
+  if (g.by < .025) { g.by = .025; g.vy = Math.abs(g.vy); } else if (g.by > .975) { g.by = .975; g.vy = -Math.abs(g.vy); }
+  for (const [side, y, x] of [[-1, g.py, .055], [1, g.qy, .945]]) {
+    if (Math.sign(g.vx) !== side || (was - x) * side > 0 || (g.bx - x) * side < 0 || Math.abs(g.by - y) > half + .02) continue;
+    g.bx = x; g.vx = -side * Math.min(Math.abs(g.vx) * 1.05, 1); g.vy = clamp(g.vy + (g.by - y) * 2.4, -.85, .85);
+  }
+  if (g.bx < -.03 || g.bx > 1.03) {
+    const yours = g.bx > 1;
+    if (yours) g.you++; else g.cpu++;
+    say('games', yours ? (wired() ? 'Your point. The cable makes this a fair game.' : 'Your point. Either that was luck or you looked at the Mac.') : wired() ? "The TV's point, and the delay had nothing to do with it." : TAUNTS[(g.cpu - 1) % TAUNTS.length], 7);
+    serve(yours ? 1 : -1, t + 1);
+  }
+}
+
+$('#play').addEventListener('click', () => {
+  hush('games');
+  if (S.scene === 'game') { S.scene = 'desk'; return sync(); }
+  stopReal();
+  Object.assign(game, { py: .5, qy: .5, aim: .5, you: 0, cpu: 0 });
+  serve(-1, now() + (S.cast === 'on' ? 1.2 : 4.6));
+  S.scene = 'game'; ensureCast(); sync();
+});
+
+// ---------- Scene 6: the visitor's own screen, late ----------
+//
+// The browser hands over the screen much as macOS does for the app. Small
+// copies of its frames are kept for as long as the TV is behind, and shown when due.
+
+async function startReal() {
+  let media;
+  try { media = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false, selfBrowserSurface: 'include' }); }
+  catch (error) { return say('real', 'Nothing was shared. The button still works if you change your mind.'); }
+  const video = document.createElement('video'), track = media.getVideoTracks()[0];
+  video.muted = true; video.playsInline = true; video.srcObject = media;
+  try { await video.play(); } catch (error) { /* it plays once it can */ }
+  Object.assign(real, { on: true, video, stream: media, kind: (track.getSettings && track.getSettings().displaySurface) || '' });
+  track.addEventListener('ended', stopReal);   // "Stop sharing" in the browser's own bar
+  hush('real');
+  S.scene = 'real'; ensureCast(); sync();
+}
+
+function stopReal() {
+  if (!real.on) return;
+  real.on = false;
+  for (const track of real.stream.getTracks()) track.stop();
+  if (S.scene === 'real') S.scene = 'desk';
+  sync();
+}
+
+function grab(t) {
+  while (real.frames.length && real.frames[0].t < t - tv.D - 1) {
+    const old = real.frames.shift().image;
+    if (old.close) old.close(); else real.spare.push(old);
+  }
+  const v = real.video;
+  if (!real.on || real.busy || t - real.last < 1 / Math.min(30, 120 / (tv.D + 1)) || v.readyState < 2 || !v.videoWidth) return;
+  const w = 512, h = Math.round(w * v.videoHeight / v.videoWidth);
+  real.last = t;
+  if (real.bitmaps) {
+    real.busy = true;
+    createImageBitmap(v, { resizeWidth: w, resizeHeight: h, resizeQuality: 'low' })
+      .then(image => { real.frames.push({ t, image }); }, () => { real.bitmaps = false; })   // where that fails, small canvases do
+      .then(() => { real.busy = false; });
+  } else {
+    const image = real.spare.pop() || document.createElement('canvas');
+    image.width = w; image.height = h;
+    image.getContext('2d').drawImage(v, 0, 0, w, h);
+    real.frames.push({ t, image });
+  }
+}
+
+if (canShare) $('#share').addEventListener('click', () => real.on ? stopReal() : startReal());
+else $('#share').hidden = true;
+
+// ---------- Browsing through the TV ----------
+//
+// Ten seconds in which the page itself is two seconds late: the pointer, the
+// scrolling and the clicks all wait their turn.
+
+const lag = { on: false, until: 0, queue: [], passing: false };
+const ghost = $('#ghost'), toast = $('#toast');
+
+function announce(text) {
+  toast.textContent = text; toast.classList.add('show');
+  clearTimeout(announce.timer); announce.timer = setTimeout(() => toast.classList.remove('show'), 2600);
+}
+
+function lagStart() {
+  if (lag.on) return;
+  Object.assign(lag, { on: true, until: now() + 10, queue: [] });
+  document.documentElement.classList.add('lagging');
+  $('#lagframe').hidden = false; ghost.removeAttribute('hidden');
+  ghost.style.transform = `translate(${mouse.cx}px, ${mouse.cy}px)`;
+  announce("You're now browsing through the TV.");
+}
+
+// Giving up drops what was still on its way. When the time runs out it all arrives at once.
+function lagStop(parting) {
+  if (!lag.on) return;
+  if (!parting) { lag.passing = true; for (const e of lag.queue) if (!('x' in e)) deliver(e); lag.passing = false; }
+  lag.on = false; lag.queue = [];
+  document.documentElement.classList.remove('lagging');
+  $('#lagframe').hidden = true; ghost.setAttribute('hidden', '');
+  announce(parting || 'The page is live again. A movie never has to click anything.');
+}
+
+function deliver(e) {
+  if (e.scroll) scrollBy(0, e.scroll);
+  else if (e.target) { const el = e.target.closest('button, a, label, input') || e.target; if (el.isConnected && el.click) el.click(); }
+  else {
+    ghost.style.transform = `translate(${e.x}px, ${e.y}px)`;
+    const under = document.elementFromPoint(e.x, e.y);
+    if (under) under.dispatchEvent(new PointerEvent('pointermove', { clientX: e.x, clientY: e.y, bubbles: true, pointerType: 'mouse' }));
+  }
+}
+
+function lagStep(t) {
+  if (!lag.on) return;
+  lag.passing = true;
+  while (lag.queue.length && lag.queue[0].t <= t - 2) deliver(lag.queue.shift());
+  lag.passing = false;
+  $('#lagClock').textContent = '0:' + String(Math.max(0, Math.ceil(lag.until - t))).padStart(2, '0');
+  if (t >= lag.until) lagStop();
+}
+
+addEventListener('pointermove', e => {
+  if (lag.on && !lag.passing) { e.stopPropagation(); lag.queue.push({ t: now(), x: e.clientX, y: e.clientY }); return; }
+  mouse.cx = e.clientX; mouse.cy = e.clientY;
+  if (S.scene === 'game' && e.target !== macCanvas && e.target !== tvCanvas) {   // anywhere on the page will do to move the paddle
+    const r = tvCanvas.getBoundingClientRect();
+    game.aim = (e.clientY - r.top) / r.height;
+  }
+}, { capture: true, passive: true });
+for (const type of ['pointerdown', 'pointerup']) addEventListener(type, e => { if (lag.on) e.stopPropagation(); }, true);
+addEventListener('wheel', e => {
+  if (!lag.on) return;
+  e.preventDefault(); lag.queue.push({ t: now(), scroll: e.deltaY * (e.deltaMode === 1 ? 18 : 1) });
+}, { capture: true, passive: false });
+addEventListener('click', e => {
+  if (!lag.on || lag.passing) return;
+  e.preventDefault(); e.stopPropagation(); lag.queue.push({ t: now(), target: e.target });
+}, true);
+addEventListener('keydown', e => {
+  if (!lag.on) return;
+  if (e.key === 'Escape') return lagStop('Fair enough.');
+  const by = { ArrowDown: 60, ArrowUp: -60, PageDown: innerHeight * .85, PageUp: -innerHeight * .85, ' ': innerHeight * .85 }[e.key];
+  if (by) { e.preventDefault(); lag.queue.push({ t: now(), scroll: by }); }
+}, true);
+if (fine) $('#lag').addEventListener('click', lagStart); else $('#lagline').hidden = true;
+
+// ---------- The credits and the terminal ----------
+
+const REPO = 'https://github.com/martynaskadisa/dillydally';
+const WAYS = {
+  brew: [`brew tap martynaskadisa/dillydally ${REPO}`, 'brew install --cask martynaskadisa/dillydally/dillydally'],
+  source: ['brew install ffmpeg', `git clone ${REPO}`, 'cd dillydally && ./build.sh --install'],
+};
+let way = 'brew', typing = 0;
+const USAGE = `usage: dillydally [options]
+
+  --list             list the TVs found on the network
+  --stop             stop playback on the TV
+  --app NAME         share this app's largest window instead of asking
+  --virtual          make the TV a display of its own, as the app does
+  --buffer SECONDS   how far behind live the TV plays (default 2)
+  --codec CODEC      hevc (default) or h264, for older TVs
+
+and a dozen more, once it's installed.`;
+const termOut = $('#termOut'), termIn = $('#termIn');
+
+function print(text, kind) {
+  const span = document.createElement('span');
+  if (kind) span.className = kind;
+  span.textContent = text; termOut.append(span); termOut.scrollTop = termOut.scrollHeight;
+  return span;
+}
+
+// Writes the chosen way's lines: a letter at a time when the terminal comes into view, all at once after a switch.
+async function typeCommands(slow) {
+  const turn = ++typing;
+  termOut.textContent = '';
+  for (const command of WAYS[way]) {
+    print('$ ', 'p');
+    const line = print('');
+    if (!slow) line.textContent = command;
+    else for (const letter of command) { line.textContent += letter; await sleep(12 + Math.random() * 28); if (turn !== typing) return; }
+    print('\n');
+    if (slow) { await sleep(240); if (turn !== typing) return; }
+  }
+  $('.term-in').hidden = false;
+}
+
+function setWay(to, slow) {
+  way = to;
+  for (const b of $('#way').children) b.setAttribute('aria-pressed', b.dataset.v === way);
+  // The download has a button and one line, so the terminal and the note about it step aside.
+  const typed = way in WAYS;
+  $('#get').hidden = typed; $('.term').hidden = !typed; $('#cli').hidden = !typed;
+  if (typed) typeCommands(slow); else typing++;
+}
+choose('#way', v => setWay(v, false));
+
+// The terminal is painted on, but it answers.
+function answer(command) {
+  const low = command.toLowerCase();
+  if (low === 'clear') { termOut.textContent = ''; return null; }
+  if (/hdmi|cable/.test(low)) return 'find: hdmi cable: No such file or directory\nTry behind the TV.';
+  if (low === 'help' || /^dillydally (-h|--help)$/.test(low)) return USAGE;
+  if (low === 'dillydally --list') return `192.168.1.23\t${TV_NAME}\tTH-50MX900\t3840x2160`;
+  if (low === 'dillydally --stop') { stopCast(); return 'Stopped the TV further up this page.'; }
+  if (/^dillydally\b/.test(low)) { ensureCast(); return `Found ${TV_NAME} at 192.168.1.23\nThat's the TV further up this page, and it's casting now.`; }
+  if (/popcorn|microwave/.test(low)) { if (!micro.on) microwave(); micro.log = true; return 'Microwaving. Watch the Wi-Fi.'; }
+  if (/^sudo\b/.test(low)) return 'Password: nice try.';
+  if (/^airplay\b/.test(low)) return "zsh: command not found: airplay\nThe TV doesn't have it either.";
+  if (low === 'ls') return 'Casks  DillyDally.icon  README.md  build.sh  capture.swift  cli.swift\ndocs  engine.swift  ffmpeg.sh  glyph.swift  menubar.swift  virtualdisplay.h';
+  if (low === 'whoami') return 'someone without an HDMI cable';
+  if (low === 'exit') return "You can't exit a painted terminal.";
+  if (/^(brew|curl|ditto|xattr|git|cd|\.\/build\.sh|open|swiftc|make)\b/.test(low)) return 'This terminal is painted on. Paste those lines into a real one.';
+  return `zsh: command not found: ${command.split(/\s+/)[0]}`;
+}
+
+termIn.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const command = termIn.value.trim();
+  termIn.value = '';
+  if (!command) return;
+  const reply = answer(command);
+  if (reply === null) return;
+  print('$ ', 'p'); print(command + '\n');
+  if (reply) print(reply + '\n', 'o');
+});
+
+async function copy(text, button) {
+  let done = false;
+  try { await navigator.clipboard.writeText(text); done = true; } catch {   // no clipboard for this page: the old way, through a selection
+    const area = document.createElement('textarea');
+    area.value = text; area.style.cssText = 'position: fixed; opacity: 0'; document.body.append(area); area.select();
+    try { done = document.execCommand('copy'); } catch {}
+    area.remove();
+  }
+  button.textContent = done ? 'Copied' : 'Select the text instead';
+  setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+}
+$('#copy').addEventListener('click', e => copy(WAYS[way].join('\n'), e.target));
+$('#snipCopy').addEventListener('click', e => copy($('.snip code').textContent, e.target));
+
+$$('#roll div').forEach((row, i) => row.style.setProperty('--i', i));
+const arrivals = new IntersectionObserver(entries => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    arrivals.unobserve(entry.target);
+    if (entry.target.id === 'roll') entry.target.classList.add('in'); else setWay(way, !calm);
+  }
+}, { threshold: .25 });
+arrivals.observe($('#roll')); arrivals.observe($('.term'));
+
+// ---------- The room itself ----------
+
+function measure() {
+  const s = stage.getBoundingClientRect();
+  const within = el => { const r = el.getBoundingClientRect(); return { x: r.left - s.left, y: r.top - s.top, w: r.width, h: r.height }; };
+  geo.dpr = Math.min(devicePixelRatio || 1, 2);
+  geo.w = s.width; geo.h = s.height; geo.mac = within(macCanvas); geo.tv = within(tvCanvas);
+  for (const canvas of [macCanvas, tvCanvas, airCanvas]) fit(canvas);
+  glowCanvas.width = 48; glowCanvas.height = 32;
+  hang(); rope.place();
+}
+
+// The panel hangs in the room on a wide screen, and sits in the story where the room is too small to read it in.
+function dock() {
+  (narrow.matches || short.matches ? $('#slot') : stage).append(panel);
+  measure();
+}
+narrow.addEventListener('change', dock); short.addEventListener('change', dock);
+new ResizeObserver(measure).observe(stage);
+new IntersectionObserver(entries => { S.seen = entries[0].isIntersecting; }).observe(stage);
+
+function tick() {
+  const d = new Date();
+  clock = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });   // with the weekday it would run into the Wi-Fi mark
+  lines();   // a direction that was said for a while gives way again
+}
+setInterval(tick, 1000);
+
+// What the TV shows lights the wall behind it.
+const amb = { h: 228, s: 50, l: 45, a: .12 };
+function light(shown) {
+  let h = amb.h, s = 30, l = 50, a = .1;
+  if (shown.scene === 'away') { h = 248; s = 55; l = 55; a = .13; }
+  else if (shown.scene === 'off') { h = shown.hue; s = 80; l = 55; a = .13; }
+  else if (shown.scene === 'desk') { h = hueAt(shown.time); s = 85; l = 55; a = shown.full ? .36 : .25; }
+  else if (shown.scene === 'game') { s = 8; l = 70; a = .08; }
+  else if (shown.scene === 'real') { h = 220; s = 25; l = 60; a = .16; }
+  amb.h = (amb.h + ((h - amb.h + 540) % 360 - 180) * .12 + 360) % 360;
+  amb.s += (s - amb.s) * .12; amb.l += (l - amb.l) * .12; amb.a += (a - amb.a) * .12;
+  wall.style.setProperty('--amb', hsl(amb.h.toFixed(0), amb.s.toFixed(0), amb.l.toFixed(0), amb.a.toFixed(3)));
+  if (shown.scene !== 'away') { gc.clearRect(0, 0, 48, 32); gc.drawImage(tvCanvas, 5.5, 4.8, 37, 21.1); }
+}
+
+const behind = $('#behind'), gauge = $('#gauge');
+function caption() {
+  const text = S.cast === 'off' ? 'no signal' : S.cast === 'starting' ? 'starting' : tv.stalled ? 'frozen by a Wi-Fi hiccup'
+    : wired() ? `${tv.D.toFixed(1)}s behind, by cable`
+    : tv.waiting ? `${tv.D.toFixed(1)}s buffer, filling`
+    : S.buffer ? `${tv.D.toFixed(1)}s buffer` : `${tv.D.toFixed(1)}s behind, no buffer`;
+  if (behind.textContent !== text) { behind.textContent = text; behind.classList.toggle('bad', tv.stalled); }
+  const held = S.cast === 'on' && !wired();
+  gauge.style.opacity = held ? 1 : 0;
+  gauge.firstChild.style.transform = `scaleX(${held ? clamp(tv.R / goal(), 0, 1).toFixed(3) : 0})`;
+}
+
+let last = now(), frames = 0;
+function frame() {
+  requestAnimationFrame(frame);
+  const t = now(), dt = Math.min(.05, t - last);
+  last = t;
+  lagStep(t);
+  if (!S.seen) {   // the movie runs on in the other room
+    stepNet(t); stepTV(t, dt);
+    if (frames++ % 3 === 0) light({ scene: 'away' });
+    return;
+  }
+  const s = stage.getBoundingClientRect(), x = mouse.cx - s.left, y = mouse.cy - s.top, most = geo.w * .06;
+  const jumped = Math.hypot(x - mouse.x, y - mouse.y) > geo.w * .3;   // a pointer that turns up from elsewhere was not moving
+  mouse.vx = jumped ? 0 : clamp(x - mouse.x, -most, most); mouse.vy = jumped ? 0 : clamp(y - mouse.y, -most, most); mouse.x = x; mouse.y = y;
+
+  if (S.scene === 'game') stepGame(t, dt);
+  else if (S.scene === 'desk' && !input.drag && t - input.last > 4 && !calm) wander(t);
+  constrain();
+  const sample = record(t);
+  stepNet(t); stepTV(t, dt);
+  drawMac(t, sample);
+  const shown = drawTV(t);
+  rope.tick(dt); drawAir(t, dt);
+  if (frames++ % 3 === 0) light(shown);
+  play('mac', sample, t);
+  play('tv', S.sound && S.cast === 'on' && !tv.stalled ? shown.s : null, shown.time);
+  if (real.video) grab(t);
+  caption(); bind();
+}
+
+document.addEventListener('visibilitychange', () => { document.title = document.hidden ? 'Still buffering…' : 'DillyDally casts your Mac to a TV with no AirPlay'; });
+console.log('%cDillyDally', 'font: 800 22px system-ui', "\nThe HDMI cable isn't in the console either.");
+
+tick(); dock(); record(now()); sync(); chapterCheck();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
