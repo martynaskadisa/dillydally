@@ -148,3 +148,9 @@ under the LGPL, version 2.1 or later. The license is in the app as
 
 `./screenshots/render.sh` redraws the panel images in `docs/` from the panel's
 own code, with a made-up TV.
+
+## License
+
+DillyDally is under the [MIT License](LICENSE). The `ffmpeg` that a release
+carries is a separate program under the LGPL, version 2.1 or later, as
+described under Releasing.
